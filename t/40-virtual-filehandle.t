@@ -69,31 +69,37 @@ is( $f->size, length($FakeStore::Data{1}), 'correct length' );
 is( $f->hash, '1' );
 is( $f->store, $sto );
 
+# create the filehandle
 my $vfh;
-ok( ($vfh= $f->handle), 'Created virtual filehandle' );
-isa_ok( $vfh, 'GLOB', 'file->handle' );
+isa_ok(($vfh= $f->newHandle), 'GLOB', 'file->newHandle' );
 
+# basic read
 my $buf;
 is( sysread($vfh, $buf, 10), 10, 'read 10 bytes' );
 is( length($buf), 10, 'got 10 bytes' );
 is( tell($vfh), 10, 'at pos 10' );
+
+# correct EOF conditions
 is( sysread($vfh, $buf, 99999), length($FakeStore::Data{1})-10, 'read remaining bytes' );
 is( length($buf), length($FakeStore::Data{1})-10, 'got remaining bytes' );
 is( tell($vfh), length($FakeStore::Data{1}), 'at end' );
 ok( eof($vfh), 'eof is true' );
+
+# readline in "slurp" context
 is( seek($vfh, 0, 0), '0 but true', 'rewind' );
 { local $/= undef; $buf= <$vfh>; }
 is( $buf, $FakeStore::Data{1}, 'slurp' );
 
-$f= $sto->get(3);
-$vfh= $f->handle;
+# readline in scalar context
+$vfh= $sto->get(3)->newHandle;
 is(<$vfh>, "abcdef\n", 'readline' );
-$f= $sto->get(2);
-$vfh= $f->handle;
+
+# readline on a really long string with no newlines
+$vfh= $sto->get(2)->newHandle;
 is(<$vfh>, $FakeStore::Data{2}, 'readline (long)' );
 
-$f= $sto->get(3);
-$vfh= $f->handle;
+#readline in list context
+$vfh= $sto->get(3)->newHandle;
 is_deeply( [ <$vfh> ], [ "abcdef\n", "ghijkl\n", "\n" ], 'readline (array ctx)' );
 
 done_testing;

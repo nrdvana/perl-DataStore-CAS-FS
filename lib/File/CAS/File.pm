@@ -29,6 +29,7 @@ from the root directory.
 
 use Carp;
 use Scalar::Util 'weaken';
+use Symbol;
 
 our @CARP_NOT= ('File::CAS::File', 'File::CAS::File::Handle');
 
@@ -46,34 +47,39 @@ The checksum 'hash' value of the data, which is used as the key in the store.
 
 The size, in bytes, of the hashed data.
 
-This must always be known for every stored file.  It will be available even if directory
-metadata is not known.
+This must always be known for every stored file.  It will be available
+even if directory metadata is not known.
 
 =head2 dirMeta (optional, read-write)
 
-A DirEntry object describing this file as it relates to some directory listing.
-This is merely for convenience in user programs, and has no real attachment to the file itself.
+A DirEntry object describing this file as it relates to some directory
+listing.  This is merely for convenience in user programs, and has no
+real attachment to the file itself.
 
 =head2 name (optional, alias, read-only)
 
 Shortcut to dirMeta->name, if and only if dirMeta is not null.
 
-=head2 handle (read-only, lazy)
-
-The virtual filehandle for this File object.  See File::CAS::File::Handle for discussion
-and limitations.
-
 =head2 bufPos (read-only)
 
-A number from [0..size]  Defaults to 0.  This is the current position of the File's stream.
+A number from [0..size]  Defaults to 0.  This is the current position
+of the File's stream.
 
 =head2 bufEnd (read-only)
 
-A number from [0..size]  Defaults to 0.  This is the position beyond the last character int he buffer.
+A number from [0..size]  Defaults to 0.  This is the position beyond the
+last character int he buffer.
 
-=head2 buffer (read-only)
+=head2 buffer (read-only reference, but modifiable with substr())
 
-Direct access to the buffer.  NEVER CHANGE THE LENGTH OF THIS BUFFER
+Direct access to the buffer.  Use this to scan the buffer for text you
+are interested in extracting.
+
+If you change the length of the buffer (not entirely recommended),
+"bufPos" will be affected, but "bufEnd" remains consistent.  This preserves
+the relation between "bufPos", "bufEnd", "eof" and "size", but beware that
+you might not seek to where you expected if you use bufPos in your
+calculation.
 
 =head2 bufAvail (read-only)
 
@@ -88,10 +94,8 @@ sub size { $_[0]{size} }
 sub dirMeta { $_[0]{dirMeta} }
 sub name { $_[0]->dirMeta && $_[0]->dirMeta->name }
 
-sub handle { $_[0]{handle} ||= do { open my $fh, '<', \''; tie(*$fh, 'File::CAS::File::Handle', $_[0]); $fh } }
-
-sub bufPos { $_[0]{bufPos}; }
-sub bufEnd { $_[0]{bufPos}+length($_[0]{buffer}); }
+sub bufPos { $_[0]{bufEnd}-length($_[0]{buffer}); }
+sub bufEnd { $_[0]{bufEnd}; }
 sub buffer { $_[0]{buffer}; }
 sub bufAvail { length($_[0]{buffer}) }
 
@@ -118,9 +122,45 @@ sub _ctor {
 	my ($class, $p)= @_;
 	defined $p->{$_} or die "Missing required attribute: $_"
 		for qw: store hash size :;
-	$p->{bufPos}= 0;
+	$p->{bufEnd}= 0;
 	$p->{buffer}= '';
 	bless $p, $class;
+}
+
+=head2 $file->newHandle
+
+Create a new virtual filehandle for this File object.
+
+Example:
+
+  my $fh= $cas->get($hash)->newHandle;
+  while (<$fh>) {
+    print "\t$_";
+  }
+
+All file handle objects returned from this $file object act
+in unison.  In other words, the $file object has the buffer
+and read position, not the $handle object.
+
+See File::CAS::File::Handle for discussion and limitations.
+
+Implementation Note: these handles are very lightweight (just a tied
+scalar ref and a new symbol), but creating them isn't free, either.
+On my system, handle creation takes about 25x as long as a standard
+accessor.  So, when you create one, you probably want to hold onto
+it if you use it over and over rather than calling ->newhandle
+each time.
+
+I debated caching the handle in the $file object, but then the
+handle needs to be a weak reference to the $file, and that would break
+the above example since the $file object would get garbage-collected
+immediately.
+
+=cut
+sub newHandle {
+	my $fh= gensym();
+	tie(*$fh, 'File::CAS::File::Handle', $_[0]);
+	$fh
 }
 
 =head2 $file->growBuffer( $optionalCount )
@@ -149,12 +189,17 @@ Example (from readline):
 
 =cut
 sub growBuffer {
-	$_[0]{store}->readFile(
+	my $got= $_[0]{store}->readFile(
 		$_[0],                      # file object
 		$_[0]{buffer},              # into the buffer
 		(defined $_[1] && $_[1]>4096? $_[1] : 4096), # at least 4096 bytes
 		length($_[0]{buffer})       # at the end of the buffer
 	);
+	return undef unless defined $got;
+	croak "Unexpected end of file (pos=$_[0]{bufEnd}, size=$_[0]{size})"
+		if $got == 0 && $_[0]{bufEnd} ne $_[0]{size};
+	$_[0]{bufEnd}+= $got;
+	$got;
 }
 
 =head2 $file->consume( $optionalCount )
@@ -183,7 +228,6 @@ sub consume {
 		$_[0]{buffer}= '';
 	}
 	
-	$_[0]{bufPos}+= length($buf);
 	$buf;
 }
 
@@ -217,18 +261,17 @@ sub seek {
 	my ($self, $ofs, $whence)= @_;
 	$whence ||= 0;
 	$ofs ||= 0;
-	$ofs += $self->{bufPos} if $whence == 1;
+	$ofs += $self->bufPos if $whence == 1;
 	$ofs += $self->{size} if $whence == 2;
-	if ($ofs >= $self->{bufPos} && $ofs - $self->{bufPos} <= length($self->{buffer})) {
+	if ($ofs >= $self->bufPos && $ofs <= $self->{bufEnd}) {
 		# no need to actually seek.  We just discard some buffer.
-		substr($self->{buffer}, 0, $ofs - $self->{bufPos})= '';
-		$self->{bufPos}= $ofs;
+		substr($self->{buffer}, 0, $ofs - $self->bufPos)= '';
 	} else {
 		# moving beyond buffer.  Discard it and move the actual file position
 		$self->{buffer}= '';
 		$ofs= $self->{store}->seekFile($self, $ofs, 0)
 			or return undef;
-		$self->{bufPos}= $ofs;
+		$self->{bufEnd}= $ofs;
 	}
 	$ofs || '0 but true';
 }
@@ -242,7 +285,7 @@ eof will not be true until all the data is removed from the buffer.
 
 =cut
 sub eof {
-	$_[0]{bufPos} >= $_[0]{size};
+	$_[0]{bufEnd} >= $_[0]{size} && !length($_[0]{buffer});
 }
 
 =head2 $file->close
@@ -257,7 +300,7 @@ at position 0; you never need to explicitly open a File object.
 sub close {
 	$_[0]{store}->closeFile(@_);
 	$_[0]{buffer}= '';
-	$_[0]{bufPos}= 0;
+	$_[0]{bufEnd}= 0;
 }
 
 =head2 $file->read( $buffer, $count, $optionalOffset )
@@ -301,7 +344,7 @@ sub read {
 	
 	# now we read directly from the store, and have exhausted the buffer
 	my $got= $self->{store}->readFile($self, $_[1], $count, $ofs||0);
-	$self->{bufPos}+= $got if $got;
+	$self->{bufEnd}+= $got if $got;
 	return $got;
 }
 
@@ -368,15 +411,22 @@ methods of a File::CAS::File object.
 
 This implementation does not currently support Perl's IO Layers,
 like automatic utf8 decoding.  Consider it to always be in ':raw'
-mode.  (:utf8 may be implemented at a future date)
+mode.  (binmode may be implemented at a future date)
+
+The handle holds a reference to the $file object it was created from,
+and you can retrieve that with
+
+  my $file= $fh->file;
 
 =cut
 
 sub TIEHANDLE {
 	my ($class, $file)= @_;
-	weaken $file;
+	#weaken $file;
 	bless \$file, $class;
 }
+
+sub file { ${(shift)} }
 
 # I'm not sure why anyone would ever want this function, but I'm adding
 #  it for completeness.
