@@ -1,0 +1,36 @@
+#!perl -T
+use strict;
+use warnings;
+
+use Test::More;
+
+use_ok('File::CAS::DirScan') || BAIL_OUT;
+
+my $scn= new_ok('File::CAS::DirScan', []);
+
+chdir('t') if -d 't';
+
+ok( my $dir= $scn->scan('scantest1'), 'scan');
+my @expected= (
+	[ qw( . dir 0 ) ],
+	[ qw( .. dir 0 ) ],
+	[ qw( C file 2 ) ],
+	[ qw( a file 0 ) ],
+	[ qw( b file 0 ) ],
+	[ qw( c file 0 ) ],
+	[ qw( d dir 0 ) ],
+	[ qw( ee file 5 ) ],
+	[ qw( f dir 0 ) ],
+	[ qw( link symlink 2 ) ],
+);
+
+my $entries= $dir->{entries};
+
+is(scalar(@$entries), scalar(@expected), 'correct count');
+for (my $i=0; $i < @expected; $i++) {
+	is($entries->[$i]{name}, $expected[$i][0], 'name');
+	is($entries->[$i]{type}, $expected[$i][1], 'type');
+	is($entries->[$i]{size}, $expected[$i][2], 'size');
+}
+
+done_testing;
