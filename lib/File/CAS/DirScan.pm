@@ -5,9 +5,9 @@ use strict;
 use warnings;
 
 use Carp;
-use Path::Class;
-use File::CAS::DirEntry;
 use Fcntl ':mode';
+use File::Spec::Functions 'catfile', 'catdir';
+use File::CAS::DirEntry;
 
 sub dieOnDirError   { $_[0]{dieOnDirError} }
 sub dieOnFileError  { $_[0]{dieOnFileError} }
@@ -45,8 +45,6 @@ my %_ModeToType= ( S_IFREG() => 'file', S_IFDIR() => 'dir', S_IFLNK() => 'symlin
 sub scan {
 	my ($self, $dir, $dirHint, $filter)= @_;
 	
-	# we want Path::Class instances
-	$dir= dir($dir) unless ref $dir;
 	my $dh;
 	my @entries;
 	if (!opendir($dh, $dir)) {
@@ -57,7 +55,7 @@ sub scan {
 		return '';
 	}
 	while (defined(my $entName= readdir($dh))) {
-		my $path= $dir->file($entName);
+		my $path= catfile($dir, $entName);
 		my @stat= $self->followSymlink? stat($path) : lstat($path);
 		if (!scalar @stat) {
 			my $msg= "Can't stat '$path': $!";
