@@ -170,22 +170,21 @@ $optionalCount bytes.  It returns the number of bytes added, just
 like the return value of 'read', returning undef on error, and 0
 on EOF.
 
-Example (from readline):
+it also checks to make sure that the stream reports EOF at the same
+byte offset as expected from $file->size, and throws an exception if
+it doesn't match.
 
-	my ($pos, $got)= (0, 1);
-	while ($got) {
-		$pos= index($self->{buffer}, $/, $pos);
-		return $self->consume($pos + length($/))
-			if $pos >= 0;
-		
-		# search from the new data onward
-		$pos= length($self->{buffer});
-		
-		# append more to the buffer
-		$got= $self->growBuffer;
-		defined $got or return undef;
+Example (slurp implementation):
+
+	sub slurp {
+		my $got= 1;
+		($got= $_[0]->growBuffer($_[0]{size}))
+			while $got;
+		return undef unless defined $got;
+		my $buf= $_[0]{buffer};
+		$_[0]{buffer}= '';
+		$buf;
 	}
-	return $self->consume;
 
 =cut
 sub growBuffer {
@@ -196,39 +195,29 @@ sub growBuffer {
 		length($_[0]{buffer})       # at the end of the buffer
 	);
 	return undef unless defined $got;
-	croak "Unexpected end of file (pos=$_[0]{bufEnd}, size=$_[0]{size})"
+	
+	# This check is purely for validation of the store.
+	# If the OS tells us the file has ended normally, and the store tells us
+	#  that it should be longer, we die loudly.
+	die "Error: Unexpected end of file in store data! (eof_pos=$_[0]{bufEnd}, size=$_[0]{size}, hash=$_[0]{hash})\n"
 		if $got == 0 && $_[0]{bufEnd} ne $_[0]{size};
+	
 	$_[0]{bufEnd}+= $got;
 	$got;
 }
 
-=head2 $file->consume( $optionalCount )
+=head2 $file->requireBuffer($count)
 
-This extracts N characters from the buffer, advances the file position,
-and returns the string.  There *must* be enough characters in the buffer
-or an error is thrown.
-
-If the optional count is not given, it returns the entire buffer.
-
-See the example above to see how elegant this can be.
+This is a quick convenience method that calls growBuffer repeatedly
+until it reaches a desired size.  If the desired size cannot be reached,
+it throws an exception "unexpected end of stream".
 
 =cut
-sub consume {
-	my $buf= $_[0]{buffer};
-	# the optional first parameter consumes only part of the buffer
-	if (defined $_[1] && $_[1] ne length($buf)) {
-		croak "consume($_[1]): not enough characters in buffer (".length($buf).")"
-			unless length($buf) >= $_[1];
-	
-		substr($buf, $_[1])= '';
-		substr($_[0]{buffer}, 0, $_[1])= '';
-	}
-	# else we simply reset the buffer
-	else {
-		$_[0]{buffer}= '';
-	}
-	
-	$buf;
+sub requireBuffer {
+	my $ret;
+	($ret= $_[0]->growBuffer($_[1] - length($_[0]{buffer}))) or croak("unexpected end of stream".(defined $ret? '' : $!))
+		while length($_[0]{buffer}) < $_[1];
+	1;
 }
 
 =head2 $file->skip( $count )
@@ -281,7 +270,7 @@ sub seek {
 Returns true if the current position (->bufPos) is at the end of the file.
 Note that the file may already have been fully read into the buffer, but
 eof will not be true until all the data is removed from the buffer.
-(using consume or read or skip or seek)
+(using read or readall or skip or seek)
 
 =cut
 sub eof {
@@ -315,37 +304,53 @@ Returns the number of bytes read, 0 on EOF, or undef on error.
 sub read {
 	my ($self, undef, $count, $ofs)= @_;
 	
-	# if we're at the end of the file, we're going to return a short count
-	my $avail= $self->bufAvail;
-	if ($self->bufEnd >= $self->{size}) {
-		unless ($avail) {
-			# report EOF
-			substr($_[1], $ofs)= '';
-			return 0;
-		}
-		# else reduce count;
-		$count= $avail;
+	# if it's a small read, and our buffer is empty, grow the buffer
+	my $avail= length $self->{buffer};
+	if ($count < 1024 && !$avail) {
+		$avail= $self->growBuffer($count);
+		return $avail unless $avail;
 	}
 	
-	# does some of it come from the buffer?
+	# can it come from the buffer?
 	if ($avail) {
-		# can serve the entire read from the buffer?
-		if ($avail >= $count) {
-			substr($_[1], $ofs||0)= $self->consume($count);
+		defined $_[1] or $_[1]= '';
+		# can we serve the entire read from the buffer?
+		if ($avail > $count) {
+			substr($_[1], $ofs||0)= substr($self->{buffer}, 0, $count);
+			substr($self->{buffer}, 0, $count)= '';
 			return $count;
 		}
 		
 		# else we consume the entire buffer
-		substr($_[1], $ofs||0)= $self->consume($avail);
-		
-		# and we try to append some more
-		$ofs= length($_[1]);
+		substr($_[1], $ofs||0)= $self->{buffer};
+		$self->{buffer}= '';
+		return $avail;
 	}
 	
-	# now we read directly from the store, and have exhausted the buffer
+	# else we pull it from the store
 	my $got= $self->{store}->readFile($self, $_[1], $count, $ofs||0);
 	$self->{bufEnd}+= $got if $got;
 	return $got;
+}
+
+=head2 $file->readall( $buffer, $count, [ $offset ] )
+
+This is like read, but all the bytes requested will be delivered to
+the buffer, or an exception is thrown.
+
+Always returns true (or throws an exception).
+
+=cut
+sub readall {
+	my ($self, undef, $count, $ofs)= @_;
+	while ($count > 0) {
+		my $ret= $self->read($_[1], $count, $ofs);
+		croak("unexpected end of stream".(defined $ret? '' : $!))
+			unless $ret;
+		$count -= $ret;
+		$ofs= length($_[1]);
+	}
+	$_[1];
 }
 
 =head2 $file->readline
@@ -357,6 +362,7 @@ if an error occurs.
 =cut
 sub readline {
 	my ($self)= @_;
+	my $buf;
 	
 	goto $self->can('slurp') unless defined $/;
 	
@@ -370,8 +376,10 @@ sub readline {
 	my ($pos, $got)= (0, 1);
 	while ($got) {
 		$pos= index($self->{buffer}, $/, $pos);
-		return $self->consume($pos + length($/))
-			if $pos >= 0;
+		if ($pos >= 0) {
+			$self->read($buf, $pos + length($/));
+			return $buf;
+		}
 		
 		# search from the new data onward
 		$pos= length($self->{buffer});
@@ -380,7 +388,12 @@ sub readline {
 		$got= $self->growBuffer;
 		defined $got or return undef;
 	}
-	return $self->bufAvail? $self->consume : undef;
+	
+	return undef unless length $self->{buffer};
+	
+	$buf= $self->{buffer};
+	$self->{buffer}= '';
+	$buf;
 }
 
 =head2 $file->slurp
@@ -397,7 +410,11 @@ sub slurp {
 	($got= $_[0]->growBuffer($_[0]{size}))
 		while $got;
 	return undef unless defined $got;
-	return $_[0]->consume;
+	
+	# return the whole buffer
+	my $buf= $_[0]{buffer};
+	$_[0]{buffer}= '';
+	$buf;
 }
 
 package File::CAS::File::Handle;
@@ -430,12 +447,7 @@ sub file { ${(shift)} }
 
 # I'm not sure why anyone would ever want this function, but I'm adding
 #  it for completeness.
-sub GETC     {
-	my $file= ${(shift)};
-	($file->growBuffer or return undef)
-		unless $file->bufAvail;
-	$file->consume(1);
-}
+sub GETC     { my $c; ${(shift)}->read($c, 1) and $c; }
 
 sub READ     { ${(shift)}->read(@_);     }
 sub READLINE { ${(shift)}->readline(@_); }
