@@ -40,7 +40,7 @@ sub _ctor {
 }
 
 my %_ModeToType= ( S_IFREG() => 'file', S_IFDIR() => 'dir', S_IFLNK() => 'symlink',
-	S_IFBLK() => 'blkdev', S_IFCHR() => 'chrdev', S_IFIFO() => 'fifo', S_IFSOCK() => 'sock' );
+	S_IFBLK() => 'blockdev', S_IFCHR() => 'chardev', S_IFIFO() => 'pipe', S_IFSOCK() => 'socket' );
 
 sub scan {
 	my ($self, $dir, $dirHint, $filter)= @_;
@@ -103,7 +103,7 @@ sub scan {
 	}
 	closedir $dh;
 	
-	return { hints => {}, entries => [ sort { $a->{name} cmp $b->{name} } @entries ] };
+	return { metadata => {}, entries => [ sort { $a->{name} cmp $b->{name} } @entries ] };
 }
 
 1;
