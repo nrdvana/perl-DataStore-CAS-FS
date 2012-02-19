@@ -16,7 +16,6 @@ Version 0.01
 
 our $VERSION = '0.01';
 
-
 =head1 SYNOPSIS
 
     use File::CAS::Store::Simple;
@@ -32,8 +31,13 @@ our $VERSION = '0.01';
 	my $hash= $sto->put(\*FH);
 	
 	my $buf;
-	my $info= $sto->get($hash);
-	my $got= $sto->read($info, $buf, 1024);
+	my $file= $sto->get($hash);
+	
+	# This breaks the file's read/write methods, but this
+	#  bypasses the buffering of the File object for a tiny
+	#  speed boost.  It uses sysread, which also bypasses
+	#  Perls's buffering.
+	$got= $sto->readFile($file, $buf, 1024);
 	
 =cut
 
@@ -102,15 +106,20 @@ sub _metaFile      { $_[0]{_infoFile} ||= catfile($_[0]{path}, 'file_cas_store_s
 sub new {
 	my $class= shift;
 	my %p= Params::Validate::validate(@_, { path => 1, alg => 0, create => 0, ignoreVersion => 0 });
-	my $create= delete $p{create};
-	my $ignoreVersion= delete $p{ignoreVersion};
-	$p{path}= "$p{path}"
-		if ref $p{path};
-	$p{alg} ||= 'auto';
-	my $self= bless \%p, $class;
+	$class->_ctor(\%p);
+}
+
+sub _ctor {
+	my ($class, $p)= @_;
+	my $create= delete $p->{create};
+	my $ignoreVersion= delete $p->{ignoreVersion};
+	$p->{path}= "$p->{path}"
+		if ref $p->{path};
+	$p->{alg} ||= 'auto';
+	my $self= bless $p, $class;
 	
 	unless (-f $self->_metaFile) {
-		croak "Path does not appear to be a CAS: '$p{path}'"
+		croak "Path does not appear to be a CAS: '$self->{path}'"
 			unless $create;
 		$self->{alg}= 'sha1' if $self->alg eq 'auto';
 		$self->initializeStore();
@@ -181,7 +190,8 @@ hash is known, and uses that one instead of recalculating it.
 Use this optimization **carefully**, as incorrect hash values
 can potentially corrupt more data than just this one file!
 
-Note that instances of Path::Class::* are handled by the File::CAS module, not the store.
+Note that instances of Path::Class::* are handled by the
+File::CAS module, not the store.
 
 =cut
 sub put {
