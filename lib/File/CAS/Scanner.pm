@@ -1,4 +1,4 @@
-package File::CAS::DirScan;
+package File::CAS::Scanner;
 
 use 5.006;
 use strict;
@@ -107,7 +107,7 @@ sub scan {
 		}
 		elsif ($args{type} eq 'file') {
 			my $prevEnt;
-			if ($dirHint && ($prevEnt= $dirHint->entryHash->{$entName})) {
+			if ($dirHint && ($prevEnt= $dirHint->find($entName))) {
 				$args{hash}= $prevEnt->hash
 					if $prevEnt->type eq $args{type}
 						and $prevEnt->size eq $args{size}
