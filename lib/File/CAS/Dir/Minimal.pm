@@ -121,7 +121,12 @@ sub _entryHash {
 	$_[0]{_entryHash} ||= { map { $_->[1] => $_ } @{$_[0]->_entries} };
 }
 
-sub find {
+=head2 $ent= $dir->getEntry($name)
+
+Get a directory entry by name.
+
+=cut
+sub getEntry {
 	$_[0]->_entryHash->{$_[1]};
 }
 

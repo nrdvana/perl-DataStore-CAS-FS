@@ -165,9 +165,13 @@ sub scanDir {
 		}
 		elsif ($args{type} eq 'file') {
 			my $prevEnt;
-			if ($dirHint && ($prevEnt= $dirHint->find($entName))) {
+			use Data::Dumper;
+			if ($dirHint && ($prevEnt= $dirHint->getEntry($entName))) {
 				$args{hash}= $prevEnt->hash
-					if $prevEnt->type eq $args{type}
+					if $prevEnt->type eq 'file'
+						and length $prevEnt->hash
+						and defined $prevEnt->size
+						and defined $prevEnt->modify_ts
 						and $prevEnt->size eq $args{size}
 						and $prevEnt->modify_ts eq $args{modify_ts};
 			}

@@ -349,10 +349,12 @@ The block count reported by lstat.
 
 =cut
 
+use Scalar::Util 'reftype';
+
 # We expect other subclasses to be based on different native objects, like arrays,
 #  so we have a special accessor that only takes effect if it is a hashref, and
 #  safely returns undef otherwise.
-{ eval "sub $_ { (ref(\$_[0]) eq 'HASH')? \$_[0]{$_} : undef }"
+{ eval "sub $_ { (reftype(\$_[0]) eq 'HASH')? \$_[0]{$_} : undef }; 1" or die "$@"
   for qw: name type hash size create_ts modify_ts linkTarget
 	uid gid mode atime ctime unix_dev unix_inode unix_nlink unix_blocksize unix_blocks :;
 }
