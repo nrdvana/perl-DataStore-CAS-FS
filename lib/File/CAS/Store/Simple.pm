@@ -109,14 +109,20 @@ sub new {
 	$class->_ctor(\%p);
 }
 
+our @_ctor_params= qw: path alg create ignoreVersion :;
+sub _ctor_params { @_ctor_params; }
 sub _ctor {
-	my ($class, $p)= @_;
-	my $create= delete $p->{create};
-	my $ignoreVersion= delete $p->{ignoreVersion};
-	$p->{path}= "$p->{path}"
-		if ref $p->{path};
-	$p->{alg} ||= 'auto';
-	my $self= bless $p, $class;
+	my ($class, $params)= @_;
+	my %p= map { $_ => delete $params->{$_} } @_ctor_params;
+	croak "Invalid parameter: ".join(', ', keys %$params)
+		if (keys %$params);
+	
+	my $create= delete $p{create};
+	my $ignoreVersion= delete $p{ignoreVersion};
+	$p{path}= "$p{path}"
+		if ref $p{path};
+	$p{alg} ||= 'auto';
+	my $self= bless \%p, $class;
 	
 	unless (-f $self->_metaFile) {
 		croak "Path does not appear to be a CAS: '$self->{path}'"
@@ -158,12 +164,10 @@ sub initializeStore {
 
 This does NOT return the data bytes associated with the hash.
 
-It returns a hashref of metadata which you can pass to ->read() to read your
-data into a buffer.  This allows us to copy with files larger than memory.
-
-Two guaranteed fields are 'hash' (a copy of the parameter to this method)
-and 'size', which is the total size in bytes of the data referenced by this
-hash.
+It returns a File::CAS::File object which you can call methods on
+to read the data from your file.  You can also ask it for a virtual (tied)
+filehandle which can be passed to perl functions which expect a filehandle.
+This allows us to work with files larger than memory.
 
 =cut
 sub get {

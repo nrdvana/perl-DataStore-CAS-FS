@@ -34,7 +34,7 @@ my @expected= (
 my $sto= new_ok('File::CAS::Store::Virtual', [], 'create temp store');
 
 my $ser= File::CAS::Dir::Minimal->SerializeEntries(\@entries, \%metadata);
-ok( length($ser) > 50, 'serialized soemthing' );
+ok( length($ser) > 50, 'serialized something' );
 
 ok( my $hash= $sto->put($ser), 'stored dir' );
 isa_ok( my $file= $sto->get($hash), 'File::CAS::File', 'file object for dir' );

@@ -53,19 +53,19 @@ The file this directory was deserialized from.
 
 =head2 store (alias)
 
-Alias for $dir->file->store
+Alias for file->store
 
 =head2 hash (alias)
 
-Alias for $dir->file->hash
+Alias for file->hash
 
 =head2 size (alias)
 
-Alias for $dir->file->size
+Alias for file->size
 
 =head2 name (alias)
 
-Alias for $dir->file->name
+Alias for file->name
 
 =cut
 
@@ -97,7 +97,7 @@ our %_Formats= ( 'File::CAS::Dir' => 'File::CAS::Dir' );
 sub RegisterFormat {
 	my ($class, $format, $decoderClass)= @_;
 	$decoderClass->isa($class)
-		or croak "Must inherit from $class";
+		or croak "$decoderClass must inherit from $class";
 	$_Formats{$format}= $decoderClass;
 }
 
@@ -111,27 +111,40 @@ the entries on demand.
 
 =cut
 our $_MagicNumber= 'CAS_Dir ';
-sub new {
+sub _headerLenForFormat {
+	my ($class, $format)= @_;
+	return length($_MagicNumber)+2+1+length($format)+1;
+}
+sub _readFormat {
 	my ($class, $file)= @_;
+	
+	$file->seek(0,0);
 	
 	# first 8 bytes are "CAS_Dir "
 	# Next 2 bytes are the length of the format in uppercase ascii hex (limiting format to 255 characters)
 	# The byte after that is a space character.
 	# There is a newline (\n) at the end of the format string which is not part of that count.
 	$file->readall(my $buf, length $_MagicNumber) eq $_MagicNumber
-		or croak "Bad magic number";
+		or croak "Bad magic number in directory ".$file->hash;
 	my $formatLen= hex $file->readall($buf, 2);
 	
-	# once we get the name of the format, we can jump over to the constructor
+	$file->readall($buf, 1+$formatLen+1);
+	substr($buf, 0, 1) eq ' ' && substr($buf, -1, 1) eq "\n"
+		or croak "Invalid directory encoding in ".$file->hash;
+	return substr($buf, 1, -1);
+}
+
+sub new {
+	my ($class, $file)= @_;
+	# as a convenience, you may pass a null file, which creates a null directory.
+	return undef unless $file;
+	# Once we get the name of the format, we can jump over to the constructor
 	# for the appropriate class
-	$file->readall(my $format, 1+$formatLen+1);
-	substr($format, 1+$formatLen, 1) eq "\n"
-		or croak "Invalid format encoding";
-	$format= substr($format, 1, -1);
+	my $format= $class->_readFormat($file);
 	defined $_Formats{$format}
-		or croak "Invalid directory format '$format' (be sure to load relevant modules)";
+		or croak "Unknown directory format '$format' in ".$file->hash."\n(be sure to load relevant modules)";
 	
-	$_Formats{$format}->_ctor({file => $file});
+	$_Formats{$format}->_ctor({ file => $file, format => $format });
 }
 
 =head1 METHODS
@@ -174,18 +187,39 @@ sub SerializeEntries {
 
 Private-ish constructor.  Like "new" with no error checking, and requires a blessable hashref.
 
-Only one parameter "file" is defined currently.
+Required parameters are "file" and "format".  Format must be the type encoded in the file, or
+deserialization will fail.
 
 =cut
 sub _ctor {
 	my ($class, $params)= @_;
 	require JSON;
 	my $self= bless $params, $class;
+	
+	$self->file->seek($class->_headerLenForFormat($params->{format}));
 	my $json= $self->file->slurp;
 	my $data= _Encoder()->decode($json);
 	$self->{_entries}= $data->{entries} or croak "Directory data is missing 'entries'";
 	$self->{_metadata}= $data->{metadata} or croak "Directory data is missing 'metadata'";
 	$self;
+}
+
+=head2 $dir->find(@path)
+
+Find a dir entry for the specified path.  If the path does not exist, returns undef.
+
+Throws exceptions if it encounters invalid directories, or has read errors.
+All other failures cause an early "return undef".
+
+=cut
+sub find {
+	my ($self, $name, @path)= @_;
+	if (@path) {
+		my $subdir= $self->subdir($name)
+			or return undef;
+		return $subdir->find(@path);
+	}
+	$self->getEntry($name);
 }
 
 sub _entries { $_[0]{_entries} }
@@ -194,8 +228,136 @@ sub _entryHash {
 	$_[0]{_entryHash} ||= { map { $_->{name} => $_ } @{$_[0]->_entries} };
 }
 
-sub find {
-	$_[0]->_entryHash->{$_[1]};
+=head2 $ent= $dir->getEntry($name)
+
+Get a directory entry by name.
+
+=cut
+sub getEntry {
+	my $ent= $_[0]->_entryHash->{$_[1]};
+	# we lazy-bless the entries
+	return $ent && bless($ent, 'File::CAS::Dir::Entry');
 }
+
+=head2 $dir2= $dir->subdir($name)
+
+Like getEntry, this finds an entry, but it also expands that entry into
+a File::CAS::Dir object.
+
+=cut
+sub subdir {
+	my ($self, $name)= @_;
+	my $entry= $self->getEntry($name)
+		or return undef;
+	($entry->type eq 'dir' && defined $entry->hash)
+		or return undef;
+	return File::CAS::Dir->new($self->file->store->get($entry->hash));
+}
+
+package File::CAS::Dir::Entry;
+use strict;
+use warnings;
+
+use DateTime;
+
+=head1 Dir::Entry
+
+File::CAS::Dir::Entry is a super-light-weight class.  More of an interface, really.
+
+It has no public constructor, and will be constructed by a File::CAS::Dir object
+or subclass.  The File::CAS::Dir::Entry interface contains the following read-only
+accessors:
+
+=head1 Dir::Entry ACCESSORS
+
+=head2 name
+
+The name of this entry within its directory.
+
+The directory object should always return normal perl unicode strings, rather than
+a string of raw bytes.  (if the raw filename wasn't a valid unicode string, it
+should have been converted to values 0..255 in the unicode charset)
+
+In other words, the name should always be platform-neutral.
+
+=head2 type
+
+One of "file", "dir", "symlink", "blockdev", "chardev", "pipe", "socket"
+
+=head2 hash
+
+The store's checksum of the data in the referenced file or directory.
+
+This should by undef for any type other than 'file' or 'dir'
+
+=head2 size
+
+The size of the referenced file.  In the case of directories, this is the size of
+the serialized directory.  All other types should be 0 or undef.
+
+=head2 create_ts
+
+The timestamp of the creation of the file, expressed in Unix Epoch seconds.
+
+=head2 modify_ts
+
+The timestamp the file was last modified, expressed in Unix Epoch seconds.
+
+=head2 linkTarget
+
+The target of a symbolic link, in platform-dependant path notation.
+
+=head2 unix_uid
+
+The number reported by lstat for uid.
+
+=head2 unix_gid
+
+The number reported by lstat for gid
+
+=head2 unix_mode
+
+The unix permissions for the entry, as reported by lstat.
+
+=head2 unix_atime
+
+The unix atime, as reported by lstat.
+
+=head2 unix_ctime
+
+The unix ctime, as reported by lstat.
+
+=head2 unix_dev
+
+The device file number, as reported by lstat.
+
+=head2 unix_inode
+
+The inode number, as reported by lstat.
+
+=head2 unix_nlink
+
+The the hardlink count reported by lstat.
+
+=head2 uix_blocksize
+
+The block size reported by lstat.
+
+=head2 uix_blocksize
+
+The block count reported by lstat.
+
+=cut
+
+# We expect other subclasses to be based on different native objects, like arrays,
+#  so we have a special accessor that only takes effect if it is a hashref, and
+#  safely returns undef otherwise.
+{ eval "sub $_ { (ref(\$_[0]) eq 'HASH')? \$_[0]{$_} : undef }"
+  for qw: name type hash size create_ts modify_ts linkTarget
+	uid gid mode atime ctime unix_dev unix_inode unix_nlink unix_blocksize unix_blocks :;
+}
+
+sub createDate { DateTime->from_epoch( epoch => $_[0]->create_ts ) }
+sub modifyDate { DateTime->from_epoch( epoch => $_[0]->modify_ts ) }
 
 1;

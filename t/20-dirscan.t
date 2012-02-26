@@ -4,16 +4,14 @@ use warnings;
 
 use Test::More;
 
-use_ok('File::CAS::DirScan') || BAIL_OUT;
+use_ok('File::CAS::Scanner') || BAIL_OUT;
 
-my $scn= new_ok('File::CAS::DirScan', []);
+my $scn= new_ok('File::CAS::Scanner', []);
 
 chdir('t') if -d 't';
 
-ok( my $dir= $scn->scan('scantest1'), 'scan');
+ok( my $dir= $scn->scanDir('scantest1'), 'scan');
 my @expected= (
-	[ qw( . dir 0 ) ],
-	[ qw( .. dir 0 ) ],
 	[ qw( C file 2 ) ],
 	[ qw( a file 0 ) ],
 	[ qw( b file 0 ) ],

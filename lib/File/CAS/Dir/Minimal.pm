@@ -129,8 +129,8 @@ package File::CAS::Dir::Minimal::Entry;
 use strict;
 use warnings;
 
-use File::CAS::DirEntry;
-our @ISA=( 'File::CAS::DirEntry' );
+use File::CAS::Dir;
+our @ISA=( 'File::CAS::Dir::Entry' );
 
 sub type { $_CodeToType{$_[0][0]} }
 sub name { $_[0][1] }

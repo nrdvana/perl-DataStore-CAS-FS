@@ -11,11 +11,17 @@ sub new {
 	$class->_ctor({ ref($_[1])? %{$_[1]} : @_ });
 }
 
+our @_ctor_params= qw: path alg create ignoreVersion :;
+sub _ctor_params { @_ctor_params; }
+
 sub _ctor {
 	my ($class, $params)= @_;
-	$params ||= {};
-	$params->{alg}= 'MD5' unless $params->{alg} && $params->{alg} ne 'auto';
-	bless $params, $class;
+	my %self= map { $_ => delete $params->{$_} } @_ctor_params;
+	croak "Invalid parameter: ".join(', ', keys %$params)
+		if (keys %$params);
+	
+	$self{alg}= 'MD5' unless $self{alg} && $self{alg} ne 'auto';
+	bless \%self, $class;
 }
 
 sub entries { $_[0]{entries} ||= {} }

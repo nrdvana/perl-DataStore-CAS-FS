@@ -23,8 +23,7 @@ our $VERSION = '0.01';
 use Carp;
 use File::CAS::File;
 use File::CAS::Dir;
-use File::CAS::DirScan;
-use File::CAS::DirEntry;
+use File::CAS::Scanner;
 
 =head1 SYNOPSIS
 
@@ -37,37 +36,105 @@ the appropriate backend and creating instances of it.
   use File::CAS;
   my $cas= File::CAS->new(engine => 'File', path => '/mnt/usb_external');
 
+=head1 ATTRIBUTES
+
+=head2 store - read-only
+
+An instance of 'File::CAS::Store' or a subclass.
+
+=head2 scanner - read/write
+
+An instance of File::CAS::Scanner, or subclass.  It is responsible for
+scanning real filesystem directories during "putDir".  If you didn't
+specify one in the constructor, one will be created automatically.
+
+You may alter this instance, or specify an alternate one during the
+constructor, or overwrite this attribute with a new object reference.
+
+=cut
+
+sub store { $_[0]{store} }
+
+sub scanner { $_[0]{scanner}= $_[1] if (scalar(@_)>1); $_[0]{scanner} }
+
 =head1 METHODS
 
-=head2 new
+=head2 new( %args | \%args )
+
+Parameters:
+
+=over
+
+=item store - required
+
+It may be a class name like 'Simple' which
+refers to the namespace File::CAS::Store::, or it may be a fully constructed
+instance.  If it is a class name, you may also specify parameters for that
+class in-line with the rest of the CAS parameters, and they will be sorted
+out automagically.
+
+=item scanner - optional
+
+Allows you to specify a scanner object
+which is used during "putDir" to collect metadata about the directory
+entries.
+
+=item filter - optional
+
+Alias for scanner->filter.
+
+=back
 
 =cut
 
 sub new {
 	my $class= shift;
 	my %p= ref($_[0])? %{$_[0]} : @_;
-	if (my $engine= delete $p{engine}) {
-		$class.= '::'.$engine;
-		require $class;
+	
+	# if they gave us a store class name, we construct an instance of it
+	unless (ref $p{store}) {
+		my $cls= (index($p{store}, '::') >= 0)? $p{store} : 'File::CAS::Store::'.$p{store};
+		$cls->can('_ctor_params')
+			or eval "require $cls"
+			or die "$@";
+		my $storeArgs= {};
+		for my $pname ($cls->_ctor_params) {
+			$storeArgs->{$pname}= delete $p{$pname};
+		}
+		$p{store}= $cls->_ctor($storeArgs);
 	}
+	
+	# pick a default scanner
+	unless ($p{scanner}) {
+		$p{scanner}= File::CAS::Scanner->new();
+	}
+	
+	if (defined $p{filter}) {
+		$p{scanner}->filter(delete $p{filter});
+	}
+	
 	$class->_ctor(\%p);
 }
 
+our @_ctor_params= qw: scanner store dirClass :;
+sub _ctor_params { @_ctor_params }
+
 sub _ctor {
-	croak "Invalid parameter: ".join(', ', keys %{$_[1]})
-		if (keys %{$_[1]});
-	bless {}, $_[0];
+	my ($class, $params)= @_;
+	my $p= { map { $_ => delete $params->{$_} } @_ctor_params };
+	croak "Invalid parameter: ".join(', ', keys %$params)
+		if (keys %$params);
+	bless $p, $class;
 }
 
 sub get {
 	# my ($self, $hash)= @_;
-	$_[0]->{store}->get($_[1]);
+	$_[0]{store}->get($_[1]);
 }
 
 sub getDir {
 	# my ($self, $hash)= @_;
-	my $file= $_[0]->{store}->get($_[1]);
-	return $file? File::CAS::Dir->Deserialize($file) : undef;
+	return File::CAS::Dir->new($_[0]{store}->get($_[1]));
 }
 
 sub calcHash {
@@ -84,9 +151,9 @@ sub calcHash {
 }
 
 sub put {
-	goto &putScalar unless ref $_[1];
-	goto &putDir    if ref($_[1])->isa('Path::Class::Dir');
-	goto &putFile   if ref($_[1])->isa('Path::Class::File');
+	return $_[0]->putScalar($_[1]) unless ref $_[1];
+	return $_[0]->putDir($_[1])    if ref($_[1])->isa('Path::Class::Dir');
+	return $_[0]->putFile($_[1])   if ref($_[1])->isa('Path::Class::File');
 	# else assume handle
 	$_[0]{store}->put($_[1]);
 }
@@ -103,13 +170,14 @@ sub putHandle {
 
 sub putFile {
 	my ($self, $fname)= @_;
-	open(my $fh, '<:raw', "$fname") == 0
+	open(my $fh, '<:raw', "$fname")
 		or croak "Can't open '$fname': $!";
 	$self->{store}->put($fh);
 }
 
 sub putDir {
-	my ($self, $dir, $filterProc)= @_;
+	my ($self, $dir, $dirHint)= @_;
+	$self->scanner->storeDir($self, $dir, $dirHint);
 }
 
 sub calcHashFile {
