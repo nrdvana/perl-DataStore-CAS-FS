@@ -32,8 +32,8 @@ Inherits from L<File::CAS::Dir>
 
 use Carp;
 use File::CAS::Dir;
+use parent 'File::CAS::Dir';
 
-our @ISA=( 'File::CAS::Dir' );
 __PACKAGE__->RegisterFormat(__PACKAGE__, __PACKAGE__);
 
 =head1 FACTORY FUNCTIONS
@@ -85,22 +85,17 @@ sub SerializeEntries {
 
 Private-ish constructor.  Like "new" with no error checking, and requires a blessable hashref.
 
-Only one parameter "file" is defined currently.
+Defined parameters are "file" and "format".
 
 =cut
 sub _ctor {
 	my ($class, $params)= @_;
-	my $self= bless $params, $class;
-	
-	# keep track of this so we can enumerate the entries later
-	$self->{_firstEntryOffset}= $self->file->tell;
-	
-	$self;
+	bless $params, $class;
 }
 
 sub _build__entries {
 	my $self= shift;
-	$self->file->seek($self->{_firstEntryOffset}, 0)
+	$self->file->seek($self->_headerLenForFormat($self->{format}))
 		or croak "seek: $!";
 	my (@e, $buf, $pos);
 	while (!$self->file->eof) {

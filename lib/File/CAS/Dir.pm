@@ -315,6 +315,14 @@ The number reported by lstat for uid.
 
 The number reported by lstat for gid
 
+=head2 unix_user
+
+The user name corresponding to the unix_uid
+
+=head2 unix_group
+
+The group name corresponding to the unix_gid
+
 =head2 unix_mode
 
 The unix permissions for the entry, as reported by lstat.
@@ -339,11 +347,11 @@ The inode number, as reported by lstat.
 
 The the hardlink count reported by lstat.
 
-=head2 uix_blocksize
+=head2 unix_blocksize
 
 The block size reported by lstat.
 
-=head2 uix_blocksize
+=head2 unix_blockcount
 
 The block count reported by lstat.
 
@@ -356,7 +364,7 @@ use Scalar::Util 'reftype';
 #  safely returns undef otherwise.
 { eval "sub $_ { (reftype(\$_[0]) eq 'HASH')? \$_[0]{$_} : undef }; 1" or die "$@"
   for qw: name type hash size create_ts modify_ts linkTarget
-	uid gid mode atime ctime unix_dev unix_inode unix_nlink unix_blocksize unix_blocks :;
+	unix_uid unix_user unix_gid unix_group unix_mode unix_atime unix_ctime unix_mtime unix_dev unix_inode unix_nlink unix_blocksize unix_blocks :;
 }
 
 sub createDate { DateTime->from_epoch( epoch => $_[0]->create_ts ) }

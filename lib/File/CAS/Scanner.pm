@@ -111,7 +111,8 @@ my %_ModeToType= ( S_IFREG() => 'file', S_IFDIR() => 'dir', S_IFLNK() => 'symlin
 
 sub scanDir {
 	my ($self, $path, $dirHint)= @_;
-	
+	my %userCache;
+	my %groupCache;
 	my $dh;
 	my @entries;
 	my $filter= $self->filter;
@@ -142,9 +143,12 @@ sub scanDir {
 			$args{unix_uid}= $stat[4];
 			$args{unix_gid}= $stat[5];
 			$args{unix_mode}= $stat[2];
+			$args{unix_user}= ( $userCache{$stat[4]} ||= getpwuid($stat[4]) );
+			$args{unix_group}= ( $groupCache{$stat[5]} ||= getgrgid($stat[5]) );
 		}
 		if ($self->includeUnixTime) {
 			$args{unix_atime}= $stat[10];
+			$args{unix_mtime}= $stat[11];
 			$args{unix_ctime}= $stat[12];
 		}
 		if ($self->includeUnixMisc) {
@@ -181,7 +185,6 @@ sub scanDir {
 		}
 		elsif ($args{type} eq 'blockdev' or $args{type} eq 'chardev') {
 			$args{device}= $self->_splitDevNode($stat[6]);
-			$args{unix_dev}= $stat[6];
 		}
 		push @entries, \%args;
 	}
