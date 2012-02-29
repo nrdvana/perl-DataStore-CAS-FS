@@ -303,6 +303,11 @@ Returns the number of bytes read, 0 on EOF, or undef on error.
 =cut
 sub read {
 	my ($self, undef, $count, $ofs)= @_;
+	if (!$count) {
+		defined $_[1] or $_[1]= '';
+		substr($_[1], $ofs||0)= '';
+		return 0;
+	}
 	
 	# if it's a small read, and our buffer is empty, grow the buffer
 	my $avail= length $self->{buffer};
@@ -343,6 +348,11 @@ Always returns true (or throws an exception).
 =cut
 sub readall {
 	my ($self, undef, $count, $ofs)= @_;
+	if (!$count) {
+		defined $_[1] or $_[1]= '';
+		substr($_[1], $ofs||0)= '';
+		return 0;
+	}
 	while ($count > 0) {
 		my $ret= $self->read($_[1], $count, $ofs);
 		croak("unexpected end of stream".(defined $ret? '' : $!))
