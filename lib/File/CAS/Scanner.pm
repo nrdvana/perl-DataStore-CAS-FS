@@ -137,7 +137,7 @@ sub scanDir {
 			type => ($_ModeToType{$stat[2] & S_IFMT}),
 			name => $entName,
 			size => $stat[7],
-			modify_ts => $stat[11],
+			modify_ts => $stat[9],
 		);
 		if ($self->includeUnixPerm) {
 			$args{unix_uid}= $stat[4];
@@ -147,16 +147,16 @@ sub scanDir {
 			$args{unix_group}= ( $groupCache{$stat[5]} ||= getgrgid($stat[5]) );
 		}
 		if ($self->includeUnixTime) {
-			$args{unix_atime}= $stat[10];
-			$args{unix_mtime}= $stat[11];
-			$args{unix_ctime}= $stat[12];
+			$args{unix_atime}= $stat[8];
+			$args{unix_mtime}= $stat[9];
+			$args{unix_ctime}= $stat[10];
 		}
 		if ($self->includeUnixMisc) {
 			$args{unix_dev}= $stat[0];
 			$args{unix_inode}= $stat[1];
 			$args{unix_nlink}= $stat[3];
-			$args{unix_blocksize}= $stat[8];
-			$args{unix_blocks}= $stat[9];
+			$args{unix_blocksize}= $stat[11];
+			$args{unix_blocks}= $stat[12];
 		}
 		if ($self->includeACL) {
 			# TODO

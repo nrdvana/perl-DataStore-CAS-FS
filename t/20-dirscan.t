@@ -29,6 +29,7 @@ for (my $i=0; $i < @expected; $i++) {
 	is($entries->[$i]{name}, $expected[$i][0], 'name');
 	is($entries->[$i]{type}, $expected[$i][1], 'type');
 	is($entries->[$i]{size}, $expected[$i][2], 'size');
+	is($entries->[$i]{modify_ts}, (lstat "scantest1/$expected[$i][0]")[9], 'mtime');
 }
 
 done_testing;
