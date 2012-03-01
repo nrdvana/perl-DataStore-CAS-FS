@@ -1,17 +1,13 @@
 package File::CAS::Store::Virtual;
 use strict;
 use warnings;
+use parent 'File::CAS::Store';
 
 use Carp;
 use File::CAS::File;
 use Digest;
 
-sub new {
-	my $class= shift;
-	$class->_ctor({ ref($_[1])? %{$_[1]} : @_ });
-}
-
-our @_ctor_params= qw: path alg create ignoreVersion :;
+our @_ctor_params= qw: path digest create ignoreVersion :;
 sub _ctor_params { @_ctor_params; }
 
 sub _ctor {
@@ -20,12 +16,12 @@ sub _ctor {
 	croak "Invalid parameter: ".join(', ', keys %$params)
 		if (keys %$params);
 	
-	$self{alg}= 'MD5' unless $self{alg} && $self{alg} ne 'auto';
+	$self{digest}= 'MD5' unless $self{digest} && $self{digest} ne 'auto';
 	bless \%self, $class;
 }
 
 sub entries { $_[0]{entries} ||= {} }
-sub alg { $_[0]{alg} }
+sub digest { $_[0]{digest} }
 
 sub get {
 	my ($self, $hash)= @_;
@@ -46,7 +42,7 @@ sub put {
 
 sub calcHash {
 	my ($self, $data)= @_;
-	Digest->new($self->alg)->add($data)->hexdigest;
+	Digest->new($self->digest)->add($data)->hexdigest;
 }
 
 sub validate {

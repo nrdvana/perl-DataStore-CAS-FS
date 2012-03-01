@@ -4,6 +4,8 @@ use 5.006;
 use strict;
 use warnings;
 
+use parent 'File::CAS::Store';
+
 =head1 NAME
 
 File::CAS::Store::Simple - Simple file/directory based CAS implementation
@@ -66,7 +68,7 @@ and will contain a hash entry for the empty string.)
 Number of bytes to copy at a time when saving data from a filehandle to the
 CAS.
 
-=head2 alg
+=head2 digest
 
 Read-only.  Algorithm used to calculate the hash values.  Default is 'sha256'.
 Valid values are anything that Digest::SHA accepts, though this could be
@@ -75,7 +77,7 @@ extended in the future.
 This value cannot be changed on the fly; custom values must be passed to the
 constructor.
 
-If you specify the value of 'auto', the constructor will set 'alg' to match
+If you specify the value of 'auto', the constructor will set 'digest' to match
 the store's configuration.  If the store has not been created yet, the
 constructor will choose an algorithm of 'sha1'.
 
@@ -94,22 +96,15 @@ file, most likely encoded as YAML.
 
 sub path           { $_[0]{path} }
 sub copyBufferSize { (@_ > 1)? $_[0]{copyBufferSize}= $_[1] : $_[0]{copyBufferSize} }
-sub alg            { $_[0]{alg} }
+sub digest         { $_[0]{digest} }
 sub hashOfNull     { $_[0]{hashOfNull} }
 sub _metaFile      { $_[0]{_infoFile} ||= catfile($_[0]{path}, 'file_cas_store_simple.yml'); }
 
 =head1 METHODS
 
-=head2 new( path => $path )
-
 =cut
-sub new {
-	my $class= shift;
-	my %p= Params::Validate::validate(@_, { path => 1, alg => 0, create => 0, ignoreVersion => 0 });
-	$class->_ctor(\%p);
-}
 
-our @_ctor_params= qw: path alg create ignoreVersion :;
+our @_ctor_params= qw: path copyBufferSize digest create ignoreVersion :;
 sub _ctor_params { @_ctor_params; }
 sub _ctor {
 	my ($class, $params)= @_;
@@ -121,26 +116,26 @@ sub _ctor {
 	my $ignoreVersion= delete $p{ignoreVersion};
 	$p{path}= "$p{path}"
 		if ref $p{path};
-	$p{alg} ||= 'auto';
+	$p{digest} ||= 'auto';
 	my $self= bless \%p, $class;
 	
 	unless (-f $self->_metaFile) {
 		croak "Path does not appear to be a CAS: '$self->{path}'"
 			unless $create;
-		$self->{alg}= 'sha1' if $self->alg eq 'auto';
+		$self->{digest}= 'sha1' if $self->digest eq 'auto';
 		$self->initializeStore();
 	}
 	
 	my ($storeSettings)= LoadFile($self->_metaFile)
 		or croak "Error reading store attributes from '".$self->_metaFile."'";
 	
-	$self->{alg}= $storeSettings->{algorithm}
-		if $self->alg eq 'auto';
+	$self->{digest}= $storeSettings->{digest}
+		if $self->digest eq 'auto';
 	$self->{hashOfNull}= $self->_newHash->hexdigest();
 	
 	# Sanity checks
-	croak "Hash algorithm mismatch: $storeSettings->{algorithm} != $self->{alg}"
-		unless $storeSettings->{algorithm} eq $self->alg;
+	croak "Digest algorithm mismatch: $storeSettings->{digest} != $self->{digest}"
+		unless $storeSettings->{digest} eq $self->digest;
 	croak "Store was created by a newer version of this module.  Pass 'ignoreVersion=>1' if you want to try anyway."
 		unless $ignoreVersion or $storeSettings->{VERSION} <= $VERSION;
 	croak "Store is missing a required entry (indicating a possibly corrupt tree)"
@@ -154,7 +149,7 @@ sub initializeStore {
 	make_path($self->path);
 	my $info= {
 		VERSION => $VERSION,
-		algorithm => $self->alg,
+		digest => $self->digest,
 	};
 	DumpFile($self->_metaFile, $info);
 	$self->put('');
@@ -213,10 +208,10 @@ sub put {
 	binmode $destFh;
 	
 	try {
-		my $alg= $self->_newHash unless defined $hash;
+		my $digest= $self->_newHash unless defined $hash;
 		# simple scalar
 		if (!ref $data) {
-			$alg->add($data) unless defined $hash;
+			$digest->add($data) unless defined $hash;
 			_writeAllOrDie($destFh, $data);
 		}
 		# else we read from the supplied file handle
@@ -226,7 +221,7 @@ sub put {
 				my $got= sysread($data, $buf, ($self->copyBufferSize || 256*1024));
 				if ($got) {
 					# hash it (maybe)
-					$alg->add($buf) unless defined $hash;
+					$digest->add($buf) unless defined $hash;
 					# then write to temp file
 					_writeAllOrDie($destFh, $buf);
 				} elsif (!defined $got) {
@@ -240,7 +235,7 @@ sub put {
 		close $destFh
 			or croak "while saving copy: $!";
 		unless (defined $hash) {
-			$hash= $alg->hexdigest;
+			$hash= $digest->hexdigest;
 			my ($dir, $file)= $self->_pathForHash($hash);
 			make_path($dir);
 			$dest= catfile($dir, $file);
@@ -273,10 +268,10 @@ Returns the alphanumeric hash.
 =cut
 sub calcHash {
 	my ($self, $data)= @_;
-	my $alg= $self->_newHash;
-	$alg->add($data) unless ref $data;
-	$alg->addfile($data) if ref $data;
-	$alg->hexdigest;
+	my $digest= $self->_newHash;
+	$digest->add($data) unless ref $data;
+	$digest->addfile($data) if ref $data;
+	$digest->hexdigest;
 }
 
 =head2 validate( $hash )
@@ -390,7 +385,7 @@ sub _writeAllOrDie {
 }
 
 sub _newHash {
-	Digest::SHA->new($_[0]{alg});
+	Digest::SHA->new($_[0]{digest});
 }
 
 sub _pathForHash {
