@@ -91,6 +91,8 @@ sub new {
 	my $class= shift;
 	my %p= ref($_[0])? %{$_[0]} : @_;
 	
+	defined $p{store} or croak "Missing required parameter 'store'";
+	
 	# if they gave us a store class name, we construct an instance of it
 	unless (ref $p{store}) {
 		my $cls= (index($p{store}, '::') >= 0)? $p{store} : 'File::CAS::Store::'.$p{store};
@@ -114,6 +116,30 @@ sub new {
 	}
 	
 	$class->_ctor(\%p);
+}
+
+sub newFromSpec {
+	my ($class, $spec)= @_;
+	if (-e $spec) {
+		if (-f $spec && ($spec =~ /\.ya?ml$/i)) {
+			require YAML;
+			my $params= YAML::LoadFile($spec)
+				or die "Error reading '$spec': $!";
+			return $class->new($params);
+		}
+		elsif (-d $spec) {
+			return $class->new(store => 'Simple', path => $spec);
+		}
+		die "Don't know how to use '$spec'\n";
+	} elsif ($spec =~ /^\(.*\)$/) {
+		return $class->new(
+			map {
+				($_ =~ /(.+)=([^=]*)$/) or die "Syntax error in spec: '$_'\n";
+				($1, $2)
+			} split ',', substr($spec, 1, -1)
+		);
+	}
+	die "Unknown spec format: '$spec'\n";
 }
 
 our @_ctor_params= qw: scanner store dirClass :;
