@@ -200,6 +200,7 @@ sub _ctor {
 	my $json= $self->file->slurp;
 	my $data= _Encoder()->decode($json);
 	$self->{_entries}= $data->{entries} or croak "Directory data is missing 'entries'";
+	bless $_, 'File::CAS::Dir::Entry' for @{$self->{_entries}};
 	$self->{_metadata}= $data->{metadata} or croak "Directory data is missing 'metadata'";
 	$self;
 }
@@ -222,21 +223,18 @@ sub find {
 	$self->getEntry($name);
 }
 
-sub _entries { $_[0]{_entries} }
-
-sub _entryHash {
-	$_[0]{_entryHash} ||= { map { $_->{name} => $_ } @{$_[0]->_entries} };
-}
+sub getEntries { @{$_[0]{_entries}} }
 
 =head2 $ent= $dir->getEntry($name)
 
 Get a directory entry by name.
 
 =cut
+sub _entryHash {
+	$_[0]{_entryHash} ||= { map { $_->{name} => $_ } $_[0]->getEntries };
+}
 sub getEntry {
-	my $ent= $_[0]->_entryHash->{$_[1]};
-	# we lazy-bless the entries
-	return $ent && bless($ent, 'File::CAS::Dir::Entry');
+	return $_[0]->_entryHash->{$_[1]};
 }
 
 =head2 $dir2= $dir->subdir($name)
