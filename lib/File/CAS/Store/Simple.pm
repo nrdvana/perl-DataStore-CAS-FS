@@ -104,7 +104,7 @@ sub _metaFile      { $_[0]{_infoFile} ||= catfile($_[0]{path}, 'file_cas_store_s
 
 =cut
 
-our @_ctor_params= qw: path copyBufferSize digest create ignoreVersion :;
+our @_ctor_params= qw: path copyBufferSize digest create ignoreVersion defaultPath :;
 sub _ctor_params { @_ctor_params; }
 sub _ctor {
 	my ($class, $params)= @_;
@@ -113,9 +113,9 @@ sub _ctor {
 		if (keys %$params);
 	
 	my $create= delete $p{create};
+	my $defaultPath= delete $p{defaultPath};
 	my $ignoreVersion= delete $p{ignoreVersion};
-	$p{path}= "$p{path}"
-		if ref $p{path};
+	defined $p{path} or $p{path}= $defaultPath;
 	$p{digest} ||= 'auto';
 	my $self= bless \%p, $class;
 	

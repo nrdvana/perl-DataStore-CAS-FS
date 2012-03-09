@@ -5,7 +5,7 @@ use Carp;
 
 sub new {
 	my $class= shift;
-	$class->_ctor({ ref($_[1])? %{$_[1]} : @_ });
+	$class->_ctor({ (scalar(@_) == 1 && ref($_[0]))? %{$_[0]} : @_ });
 }
 
 sub _ctor_params {  }

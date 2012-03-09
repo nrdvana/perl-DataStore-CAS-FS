@@ -5,7 +5,27 @@ use warnings;
 
 use Getopt::Long;
 use Pod::Usage;
+use App::Casbak;
 
+my %casbak;
+my %ls;
+
+GetOptions(
+	'version|V' => sub { print $App::Casbak::VERSION."\n"; },
+	'help|?'    => sub { pod2usage(-verbose => 2, -exitcode => 1) },
+	'cas|C'     => \$casbak{backupDir},
+	'date|d'    => \$ls{date},
+	'long|l'    => \$ls{long},
+	'a'         => \$ls{hidden},
+) or pod2usage(2);
+
+$ls{paths}= [ @ARGV ];
+
+App::Casbak->new(\%casbak)->ls(\%ls);
+exit 0;
+
+
+__END__
 =head1 NAME
 
 casbak-ls - List files in a backup, roughly as the ls command would
@@ -70,4 +90,3 @@ people in the habit of "ls -la" don't get an error message.
   
 =cut
 
-pod2usage(-verbose => 2);
