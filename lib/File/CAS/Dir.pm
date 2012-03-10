@@ -177,8 +177,8 @@ sub SerializeEntries {
 	my $ret= "CAS_Dir 0E File::CAS::Dir\n"
 		."{\"metadata\":$json,\n"
 		." \"entries\":[ \n";
-	$ret .= $enc->encode($_).",\n"
-		for sort {$a->{name} cmp $b->{name}} @$entryList;
+	$ret .= $enc->encode(ref $_ eq 'HASH'? $_ : $_->asHash).",\n"
+		for sort {(ref $a eq 'HASH'? $a->{name} : $a->name) cmp (ref $b eq 'HASH'? $b->{name} : $b->name)} @$entryList;
 	substr($ret, -2)= "\n]}\n";
 	$ret;
 }
@@ -200,7 +200,7 @@ sub _ctor {
 	my $json= $self->file->slurp;
 	my $data= _Encoder()->decode($json);
 	$self->{_entries}= $data->{entries} or croak "Directory data is missing 'entries'";
-	bless $_, 'File::CAS::Dir::Entry' for @{$self->{_entries}};
+	$_= File::CAS::Dir::Entry->new($_) for @{$self->{_entries}};
 	$self->{_metadata}= $data->{metadata} or croak "Directory data is missing 'metadata'";
 	$self;
 }
@@ -357,15 +357,22 @@ The block count reported by lstat.
 
 use Scalar::Util 'reftype';
 
+sub new {
+	my $class= shift;
+	my $hash= (scalar(@_) eq 1 && ref $_[0])? $_[0] : { @_ };
+	bless \$hash, $class;
+}
+
 # We expect other subclasses to be based on different native objects, like arrays,
 #  so we have a special accessor that only takes effect if it is a hashref, and
 #  safely returns undef otherwise.
-{ eval "sub $_ { (reftype(\$_[0]) eq 'HASH')? \$_[0]{$_} : undef }; 1" or die "$@"
+{ eval "sub $_ { \$_[0]->asHash->{$_} }; 1" or die "$@"
   for qw: name type hash size create_ts modify_ts linkTarget
 	unix_uid unix_user unix_gid unix_group unix_mode unix_atime unix_ctime unix_mtime unix_dev unix_inode unix_nlink unix_blocksize unix_blocks :;
 }
 
 sub createDate { DateTime->from_epoch( epoch => $_[0]->create_ts ) }
 sub modifyDate { DateTime->from_epoch( epoch => $_[0]->modify_ts ) }
+sub asHash { ${$_[0]} }
 
 1;

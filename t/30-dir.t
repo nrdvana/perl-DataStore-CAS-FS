@@ -32,6 +32,6 @@ isa_ok( my $file= $sto->get($hash), 'File::CAS::File', 'file object for dir' );
 my $dir= new_ok('File::CAS::Dir', [ $file ], 'created dir object');
 
 is_deeply( $dir->{_metadata}, \%metadata, 'deserialized metadata' );
-is_deeply( $dir->{_entries}, \@entries, 'deserialized entries' );
+is_deeply( [ map { $_->asHash } @{$dir->{_entries}} ], \@entries, 'deserialized entries' );
 
 done_testing;

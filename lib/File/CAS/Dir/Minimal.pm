@@ -137,5 +137,6 @@ sub name { $_[0][1] }
 sub hash { ($_[0][0] eq 'f' || $_[0][0] eq 'd')? $_[0][2] : undef }
 sub linkTarget { $_[0][0] eq 'l'? $_[0][2] : undef }
 sub device { ($_[0][0] eq 'b' || $_[0][0] eq 'c')? $_[0][2] : undef }
+sub asHash { return $_[0][3] ||= { map { defined ($_[0]->$_)? ($_ => $_[0]->$_) : () } qw: type name hash linkTarget device : } }
 
 1;
