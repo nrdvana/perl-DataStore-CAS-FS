@@ -21,6 +21,7 @@ Version 0.01
 our $VERSION = '0.01';
 
 use Carp;
+use File::Spec;
 use File::CAS::File;
 use File::CAS::Dir;
 use File::CAS::Scanner;
@@ -93,53 +94,45 @@ sub new {
 	
 	defined $p{store} or croak "Missing required parameter 'store'";
 	
-	# if they gave us a store class name, we construct an instance of it
-	unless (ref $p{store}) {
-		my $cls= (index($p{store}, '::') >= 0)? $p{store} : 'File::CAS::Store::'.$p{store};
-		$cls->can('_ctor_params')
-			or eval "require $cls"
-			or die "$@";
-		my $storeArgs= {};
-		for my $pname ($cls->_ctor_params) {
-			$storeArgs->{$pname}= delete $p{$pname};
-		}
-		$p{store}= $cls->_ctor($storeArgs);
+	# coercion of store parameters to Store object
+	if ($p{store} && !ref $p{store}) {
+		$p{store}= { CLASS => $p{store} };
+	}
+	if (ref $p{store} eq 'HASH') {
+		my %sp= %{$p{store}};
+		my $sclass= delete $sp{CLASS} || 'File::CAS::Store::Simple';
+		$sclass->can('new')
+			# don't eval if we can avoid it...
+			or require File::Spec->catfile(split('::',$sclass)).'.pm';
+		$sclass->isa('File::CAS::Store')
+			or die "'$sclass' is not a valid Store class\n";
+		$p{store}= $sclass->new(\%sp);
 	}
 	
-	# pick a default scanner
-	unless ($p{scanner}) {
-		$p{scanner}= File::CAS::Scanner->new();
-	}
-	
-	if (defined $p{filter}) {
-		$p{scanner}->filter(delete $p{filter});
+	# coercion of scanner parameters to Scanner object
+	$p{scanner} ||= { };
+	if (ref $p{scanner} eq 'HASH') {
+		my %sp= %{$p{scanner}};
+		my $sclass= delete $sp{CLASS} || 'File::CAS::Scanner';
+		$sclass->can('new')
+			# don't eval if we can avoid it...
+			or require File::Spec->catfile(split('::',$sclass)).'.pm';
+		$sclass->isa('File::CAS::Scanner')
+			or die "'$sclass' is not a valid Scanner class\n";
+		$p{scanner}= $sclass->new(\%sp);
 	}
 	
 	$class->_ctor(\%p);
 }
 
-sub newFromSpec {
-	my ($class, $spec)= @_;
-	if (-e $spec) {
-		if (-f $spec && ($spec =~ /\.ya?ml$/i)) {
-			require YAML;
-			my $params= YAML::LoadFile($spec)
-				or die "Error reading '$spec': $!";
-			return $class->new($params);
-		}
-		elsif (-d $spec) {
-			return $class->new(store => 'Simple', path => $spec);
-		}
-		die "Don't know how to use '$spec'\n";
-	} elsif ($spec =~ /^\(.*\)$/) {
-		return $class->new(
-			map {
-				($_ =~ /(.+)=([^=]*)$/) or die "Syntax error in spec: '$_'\n";
-				($1, $2)
-			} split ',', substr($spec, 1, -1)
-		);
-	}
-	die "Unknown spec format: '$spec'\n";
+sub getConfig {
+	my $self= shift;
+	return {
+		CLASS => ref $self,
+		VERSION => $VERSION,
+		store => $self->store->getConfig,
+		scanner => $self->scanner->getConfig,
+	};
 }
 
 our @_ctor_params= qw: scanner store dirClass :;
@@ -150,6 +143,10 @@ sub _ctor {
 	my $p= { map { $_ => delete $params->{$_} } @_ctor_params };
 	croak "Invalid parameter: ".join(', ', keys %$params)
 		if (keys %$params);
+	defined $p->{store} and $p->{store}->isa('File::CAS::Store')
+		or croak "Missing/invalid parameter 'store'";
+	defined $p->{scanner} and $p->{scanner}->isa('File::CAS::Scanner')
+		or croak "Missing/invalid parameter 'scanner'";
 	bless $p, $class;
 }
 
