@@ -45,12 +45,13 @@ our $VERSION = '0.01';
 
 use Carp;
 use File::Spec::Functions 'catfile', 'catdir';
+use Cwd ();
 use File::Copy;
 use File::Temp 'tempfile';
 use File::Path 'make_path';
 use Digest::SHA;
 use IO::File;
-use YAML 'LoadFile', 'DumpFile';
+use YAML ();
 use Try::Tiny;
 use Params::Validate ();
 use File::CAS::File;
@@ -95,16 +96,22 @@ file, most likely encoded as YAML.
 =cut
 
 sub path           { $_[0]{path} }
-sub copyBufferSize { (@_ > 1)? $_[0]{copyBufferSize}= $_[1] : $_[0]{copyBufferSize} }
+sub pathBase       { $_[0]{pathBase} }
+sub copyBufferSize { $_[0]{copyBufferSize}= $_[1] if (@_ > 1); $_[0]{copyBufferSize} || 256*1024 }
 sub digest         { $_[0]{digest} }
 sub hashOfNull     { $_[0]{hashOfNull} }
-sub _metaFile      { $_[0]{_infoFile} ||= catfile($_[0]{path}, 'file_cas_store_simple.yml'); }
+sub _metaFile      { $_[0]{_infoFile} ||= catfile($_[0]->pathReal, 'file_cas_store_simple.yml'); }
+
+sub pathReal {
+	my $self= shift;
+	$self->{pathReal} ||= Cwd::realpath(File::Spec->rel2abs( $self->path, $self->pathBase));
+}
 
 =head1 METHODS
 
 =cut
 
-our @_ctor_params= qw: path copyBufferSize digest create ignoreVersion defaultPath :;
+our @_ctor_params= qw: path copyBufferSize digest create ignoreVersion pathBase :;
 sub _ctor_params { @_ctor_params; }
 sub _ctor {
 	my ($class, $params)= @_;
@@ -113,9 +120,8 @@ sub _ctor {
 		if (keys %$params);
 	
 	my $create= delete $p{create};
-	my $defaultPath= delete $p{defaultPath};
 	my $ignoreVersion= delete $p{ignoreVersion};
-	defined $p{path} or $p{path}= $defaultPath;
+	defined $p{path} or $p{path}= '.';
 	$p{digest} ||= 'auto';
 	my $self= bless \%p, $class;
 	
@@ -126,11 +132,11 @@ sub _ctor {
 		$self->initializeStore();
 	}
 	
-	my ($storeSettings)= LoadFile($self->_metaFile)
+	my ($storeSettings)= YAML::LoadFile($self->_metaFile)
 		or croak "Error reading store attributes from '".$self->_metaFile."'";
 	
 	$self->{digest}= $storeSettings->{digest}
-		if $self->digest eq 'auto';
+		if !defined $self->digest or $self->digest eq 'auto';
 	$self->{hashOfNull}= $self->_newHash->hexdigest();
 	
 	# Sanity checks
@@ -144,14 +150,22 @@ sub _ctor {
 	return $self;
 }
 
-sub initializeStore {
-	my ($self)= @_;
-	make_path($self->path);
-	my $info= {
+sub getConfig {
+	my $self= shift;
+	return {
+		CLASS => ref $self,
 		VERSION => $VERSION,
+		# we don't store pathBase or pathReal, so that path can remain relative.
+		path => $self->path,
+		(defined $self->{copyBufferSize}? ( copyBufferSize => $self->copybufferSize ) : ()),
 		digest => $self->digest,
 	};
-	DumpFile($self->_metaFile, $info);
+}
+
+sub initializeStore {
+	my ($self)= @_;
+	make_path($self->pathReal);
+	YAML::DumpFile($self->_metaFile, $self->getConfig);
 	$self->put('');
 }
 
@@ -203,7 +217,7 @@ sub put {
 		make_path($dir);
 		($destFh, $fname)= tempfile( 'temp-XXXXXXXX', DIR => $dir );
 	} else {
-		($destFh, $fname)= tempfile( 'temp-XXXXXXXX', DIR => $self->path );
+		($destFh, $fname)= tempfile( 'temp-XXXXXXXX', DIR => $self->pathReal );
 	}
 	binmode $destFh;
 	
@@ -218,7 +232,7 @@ sub put {
 		else {
 			my $buf;
 			while(1) {
-				my $got= sysread($data, $buf, ($self->copyBufferSize || 256*1024));
+				my $got= sysread($data, $buf, $self->copyBufferSize);
 				if ($got) {
 					# hash it (maybe)
 					$digest->add($buf) unless defined $hash;
@@ -390,7 +404,7 @@ sub _newHash {
 
 sub _pathForHash {
 	my ($self, $hash)= @_;
-	catfile( $self->path, substr($hash, 0, 2), substr($hash, 2, 2) ), substr($hash,4);
+	catfile( $self->pathReal, substr($hash, 0, 2), substr($hash, 2, 2) ), substr($hash,4);
 }
 
 =head1 AUTHOR
