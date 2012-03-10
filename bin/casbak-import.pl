@@ -5,6 +5,33 @@ use warnings;
 
 use Getopt::Long;
 use Pod::Usage;
+use App::Casbak;
+
+my %casbak;
+my %import;
+
+GetOptions(
+	'version|V' => sub { print $App::Casbak::VERSION."\n"; },
+	'help|?'    => sub { pod2usage(-verbose => 2, -exitcode => 1) },
+	'cas|C=s'   => \$casbak{backupDir},
+	'as=s'      => \$import{as},
+) or pod2usage(2);
+
+scalar(@ARGV)
+	or pod2usage("No paths specified");
+
+if ($import{as}) {
+	scalar(@ARGV) == 1
+		or die "Only one path allowed when using --as\n";
+	$import{paths}= [ [ $ARGV[0], $import{as} ] ];
+} else {
+	$import{paths}= [ @ARGV ];
+}
+
+App::Casbak->new(\%casbak)->import(\%import);
+exit 0;
+
+__END__
 
 =head1 NAME
 
@@ -55,5 +82,3 @@ requires a directory encoding that preserves mtime.
   casbak-import --as /bin /tmp/new_bin
   
 =cut
-
-pod2usage(1);

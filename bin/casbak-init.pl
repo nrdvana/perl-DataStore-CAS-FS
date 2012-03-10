@@ -7,26 +7,42 @@ use Getopt::Long;
 use Pod::Usage;
 use App::Casbak;
 
-my %casbak= ( config => {} );
 my %init;
 
 GetOptions(
 	'version|V' => sub { print $App::Casbak::VERSION."\n"; },
 	'help|?' => sub { pod2usage(-verbose => 2, -exitcode => 1) },
-	'cas|C' => \$casbak{backupDir},
+	'cas|C' => \$init{backupDir},
 ) or pod2usage(2);
 
 for my $arg (@ARGV) {
-	($arg =~ /^([A-Za-z_][A-Za-z0-9_]*)=(.*)/)
+	($arg =~ /^([A-Za-z_][A-Za-z0-9_.]*)=(.*)/)
 		or pod2usage("Invalid name=value pair: '$arg'\n");
-	$init{$1}= $2;
+	apply(\%init, [split /\./, $1], $2, 0 );
 }
 
-defined $init{store} and length $init{store}
-	or pod2usage("Parameter 'store' is required\n");
+defined $init{cas}{store} and length $init{cas}{store}
+	or pod2usage("Parameter 'cas.store' is required\n");
 
-App::Casbak->new(\%casbak)->init(\%init);
+App::Casbak->init(\%init);
 exit 0;
+
+sub apply {
+	my ($hash, $path, $value, $i)= @_;
+	my $field= $path->[$i];
+	if ($i < $#$path) {
+		$hash->{$field} ||= {};
+		if (!ref $hash->{$field}) {
+			warn "using implied ".join('.', @$path[0..$i]).".CLASS = $value\n";
+			$hash->{$field}= { CLASS => $hash->{$field} };
+		}
+		apply($hash->{$field}, $path, $value, $i+1);
+	} else {
+		warn "Multiple values specified for ".join('.', @$path).".  Using '$value'.\n"
+			if defined $hash->{$field};
+		$hash->{$field}= $value;
+	}
+}
 
 __END__
 =head1 NAME
