@@ -9,6 +9,8 @@ use Fcntl ':mode';
 use Try::Tiny;
 use File::Spec::Functions 'catfile', 'catdir';
 
+our $VERSION= 0.01;
+
 =head2 dirClass - read/write
 
 Directories can be recorded with varying levels of metadata
@@ -91,28 +93,109 @@ our %_ctor_defaults= (
 	followSymlink   => 0,
 );
 	
-our @_ctor_params= qw: dirClass :, keys %_ctor_defaults;
+our @_ctor_params= qw: dirClass uidCache gidCache :, keys %_ctor_defaults;
 
 sub _ctor {
 	my ($class, $p)= @_;
 	my %self= map { $_ => delete $p->{$_} } @_ctor_params;
 	croak "Invalid param(s): ".join(', ', keys %$p)
 		if keys %$p;
-	$self{$_}= $_ctor_defaults{$_} for keys %_ctor_defaults;
+	defined $self{$_} or $self{$_}= $_ctor_defaults{$_} for keys %_ctor_defaults;
+	defined $self{uidCache} or $self{uidCache}= {};
+	defined $self{gidCache} or $self{gidCache}= {};
 	bless \%self, $class;
+}
+
+sub getConfig {
+	my $self= shift;
+	return {
+		CLASS => ref $self,
+		VERSION => $VERSION,
+		(defined $self->{dirClass}? ( dirClass => $self->dirClass ) : ()),
+		(map { ($self->$_ ne $_ctor_defaults{$_})? ( $_ => $self->$_ ) : () } keys %_ctor_defaults),
+		(($self->filter and ref $self->filter ne 'CODE')? ( filter => $self->filter->getConfig ) : ()),
+	};
 }
 
 sub _splitDevNode {
 	($_[1] >> 8).','.($_[1] & 0xFF);
 }
 
+sub uidCache { $_[0]{uidCache} }
+sub gidCache { $_[0]{gidCache} }
+
 my %_ModeToType= ( S_IFREG() => 'file', S_IFDIR() => 'dir', S_IFLNK() => 'symlink',
 	S_IFBLK() => 'blockdev', S_IFCHR() => 'chardev', S_IFIFO() => 'pipe', S_IFSOCK() => 'socket' );
 
+sub scanDirEnt {
+	my ($self, $entPath, $prevEntHint, $entName, $stat)= @_;
+	
+	unless ($stat) {
+		$stat= $self->followSymlink? [ stat($entPath) ] : [ lstat($entPath) ];
+		unless (scalar @$stat) {
+			$self->_handleDirError("Can't stat '$entPath': $!");
+			return undef;
+		}
+	}
+	defined $entName
+		or (undef, undef, $entName)= File::Spec->splitpath($entPath);
+	
+	my %attrs= (
+		type => ($_ModeToType{$stat->[2] & S_IFMT}),
+		name => $entName,
+		size => $stat->[7],
+		modify_ts => $stat->[9],
+	);
+	if ($self->includeUnixPerm) {
+		$attrs{unix_uid}= $stat->[4];
+		$attrs{unix_gid}= $stat->[5];
+		$attrs{unix_mode}= $stat->[2];
+		$attrs{unix_user}= ( $self->{uidCache}{$stat->[4]} ||= getpwuid($stat->[4]) );
+		$attrs{unix_group}= ( $self->{gidCache}{$stat->[5]} ||= getgrgid($stat->[5]) );
+	}
+	if ($self->includeUnixTime) {
+		$attrs{unix_atime}= $stat->[8];
+		$attrs{unix_mtime}= $stat->[9];
+		$attrs{unix_ctime}= $stat->[10];
+	}
+	if ($self->includeUnixMisc) {
+		$attrs{unix_dev}= $stat->[0];
+		$attrs{unix_inode}= $stat->[1];
+		$attrs{unix_nlink}= $stat->[3];
+		$attrs{unix_blocksize}= $stat->[11];
+		$attrs{unix_blocks}= $stat->[12];
+	}
+	if ($self->includeACL) {
+		# TODO
+	}
+	if ($self->includeExtAttr) {
+		# TODO
+	}
+	if ($attrs{type} eq 'dir') {
+		$attrs{size}= 0;
+	}
+	elsif ($attrs{type} eq 'file') {
+		if ($prevEntHint) {
+			$attrs{hash}= $prevEntHint->hash
+				if $prevEntHint->type eq 'file'
+					and length $prevEntHint->hash
+					and defined $prevEntHint->size
+					and defined $prevEntHint->modify_ts
+					and $prevEntHint->size eq $attrs{size}
+					and $prevEntHint->modify_ts eq $attrs{modify_ts};
+		}
+	}
+	elsif ($attrs{type} eq 'symlink') {
+		$attrs{linkTarget}= readlink $entPath;
+	}
+	elsif ($attrs{type} eq 'blockdev' or $attrs{type} eq 'chardev') {
+		$attrs{device}= $self->_splitDevNode($stat->[6]);
+	}
+	\%attrs;
+}
+
 sub scanDir {
 	my ($self, $path, $dirHint)= @_;
-	my %userCache;
-	my %groupCache;
 	my $dh;
 	my @entries;
 	my $filter= $self->filter;
@@ -124,69 +207,16 @@ sub scanDir {
 		next if $entName eq '.' or $entName eq '..';
 		
 		my $entPath= catfile($path, $entName);
-		
 		my @stat= $self->followSymlink? stat($entPath) : lstat($entPath);
 		unless (@stat) {
-			$self->_handleDirError("Can't stat '$path': $!");
+			$self->_handleDirError("Can't stat '$entPath': $!");
 			next;
 		}
 		
 		next if $filter && !$filter->($entName, $entPath, \@stat);
 		
-		my %args= (
-			type => ($_ModeToType{$stat[2] & S_IFMT}),
-			name => $entName,
-			size => $stat[7],
-			modify_ts => $stat[9],
-		);
-		if ($self->includeUnixPerm) {
-			$args{unix_uid}= $stat[4];
-			$args{unix_gid}= $stat[5];
-			$args{unix_mode}= $stat[2];
-			$args{unix_user}= ( $userCache{$stat[4]} ||= getpwuid($stat[4]) );
-			$args{unix_group}= ( $groupCache{$stat[5]} ||= getgrgid($stat[5]) );
-		}
-		if ($self->includeUnixTime) {
-			$args{unix_atime}= $stat[8];
-			$args{unix_mtime}= $stat[9];
-			$args{unix_ctime}= $stat[10];
-		}
-		if ($self->includeUnixMisc) {
-			$args{unix_dev}= $stat[0];
-			$args{unix_inode}= $stat[1];
-			$args{unix_nlink}= $stat[3];
-			$args{unix_blocksize}= $stat[11];
-			$args{unix_blocks}= $stat[12];
-		}
-		if ($self->includeACL) {
-			# TODO
-		}
-		if ($self->includeExtAttr) {
-			# TODO
-		}
-		if ($args{type} eq 'dir') {
-			$args{size}= 0;
-		}
-		elsif ($args{type} eq 'file') {
-			my $prevEnt;
-			use Data::Dumper;
-			if ($dirHint && ($prevEnt= $dirHint->getEntry($entName))) {
-				$args{hash}= $prevEnt->hash
-					if $prevEnt->type eq 'file'
-						and length $prevEnt->hash
-						and defined $prevEnt->size
-						and defined $prevEnt->modify_ts
-						and $prevEnt->size eq $args{size}
-						and $prevEnt->modify_ts eq $args{modify_ts};
-			}
-		}
-		elsif ($args{type} eq 'symlink') {
-			$args{linkTarget}= readlink $path;
-		}
-		elsif ($args{type} eq 'blockdev' or $args{type} eq 'chardev') {
-			$args{device}= $self->_splitDevNode($stat[6]);
-		}
-		push @entries, \%args;
+		my $dirEntHint= ($dirHint && ($stat[2] & S_IFREG))? $dirHint->getEntry($entName) : undef;
+		push @entries, $self->scanDirEnt($entPath, $dirEntHint, $entName, \@stat);
 	}
 	closedir $dh;
 	
