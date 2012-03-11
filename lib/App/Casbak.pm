@@ -126,7 +126,7 @@ sub new {
 			$cp{store}{pathBase}= $p{backupDir} if $validParams{pathBase};
 		}
 		
-		print Data::Dumper::Dumper(\%cp);
+		#print Data::Dumper::Dumper(\%cp);
 		$p{cas}= $cclass->new(\%cp);
 	}
 	
@@ -188,7 +188,7 @@ sub canonicalDate {
 
 sub init {
 	my ($class, $params)= @_;
-	print Data::Dumper->Dumper($params)."\n";
+	#print Data::Dumper->Dumper($params)."\n";
 	my $dir= $params->{backupDir} || '.';
 	my @entries= grep { $_ ne '.' && $_ ne '..' } <$dir/*>;
 	scalar(@entries)
