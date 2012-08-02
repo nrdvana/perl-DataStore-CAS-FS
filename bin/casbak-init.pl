@@ -6,6 +6,7 @@ use warnings;
 use Getopt::Long 2.24 qw(:config no_ignore_case bundling permute);
 use Pod::Usage;
 use App::Casbak;
+use Try::Tiny;
 
 my %casbak;
 my %init= ( cas => { store => { CLASS => 'File::CAS::Store::Simple' } } );
@@ -71,8 +72,9 @@ sub parseDirtype {
 
 sub parseDigest {
 	my ($opt, $digest)= @_;
-	Digest->new($digest)
-		or die "Digest algorithm '$digest' is not available on this system.\n";
+	require Digest;
+	try { Digest->new($digest) }
+	catch { die "Digest algorithm '$digest' is not available on this system.\n"; };
 	$init{cas}{store}{digest}= $digest;
 }
 
@@ -90,7 +92,7 @@ STORE_CLASS is one of: 'Simple'
 DIR_CLASS is one of: 'Universal', 'Minimal', 'Unix'
 
 Each name=value pair is treated as an argument to the constructor of App::Casbak.
-Use dotted notation to build a hierarchy, like "cas.store.digest=sha256".
+Use dotted notation to build a hierarchy, like "cas.store.digest=SHA-256".
 
 See the documentation for App::Casbak, File::CAS, File::CAS::Store::*
 and File::CAS::Scanner for all available constructor parameters.
