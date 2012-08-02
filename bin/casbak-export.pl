@@ -3,8 +3,25 @@
 use strict;
 use warnings;
 
-use Getopt::Long;
+use Getopt::Long 2.24 qw(:config no_ignore_case bundling permute);
 use Pod::Usage;
+use App::Casbak;
+
+my %casbak;
+my %export;
+
+GetOptions(
+	App::Casbak::CmdlineOptions(\%casbak),
+	'merge' => \$export->{merge},
+) or pod2usage(2);
+
+scalar(@ARGV) == 2
+	or pod2usage("Exactly one source and one dest path required");
+
+App::Casbak->new(\%casbak)->export(\%export);
+exit 0;
+
+__END__
 
 =head1 NAME
 
@@ -19,17 +36,23 @@ casbak-export - restore files from the backup to a real filesystem
 
 =over 20
 
-=item --cas BACKUP_DIR
+=item --quick
 
-Path to the backup directory.  Defaults to "."
+Rely on the timestamp and size of files (in the real filesystem) instead
+of hashing them, when determining whether they need replaced.
 
-=item --check | -c
+=item --check
 
-Check the checksum of each file instead of assuming based on
-timestamp, and also check each restored file.
+Verify the files being restored from the CAS by re-hashing them to make
+sure they haven't been corrupted.  The check is done *before* overwriting
+the destination filename.
 
 =back
 
-=cut
+See "casbak --help" for general-purpose options.
 
-pod2usage(1);
+=head1 SECURITY
+
+See discussion in "casbak --help"
+
+=cut

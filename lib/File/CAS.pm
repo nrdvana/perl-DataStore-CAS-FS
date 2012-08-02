@@ -18,7 +18,10 @@ Version 0.01
 
 =cut
 
-our $VERSION = '0.01';
+our $VERSION = '0.0100';
+sub VersionParts {
+	return (int($VERSION), (int($VERSION*100)%100), (int($VERSION*10000)%100));
+}
 
 use Carp;
 use File::Spec;

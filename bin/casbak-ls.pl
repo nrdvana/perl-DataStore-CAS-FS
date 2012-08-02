@@ -3,7 +3,7 @@
 use strict;
 use warnings;
 
-use Getopt::Long;
+use Getopt::Long 2.24 qw(:config no_ignore_case bundling permute);
 use Pod::Usage;
 use App::Casbak;
 
@@ -11,12 +11,11 @@ my %casbak;
 my %ls;
 
 GetOptions(
-	'version|V' => sub { print $App::Casbak::VERSION."\n"; },
-	'help|?'    => sub { pod2usage(-verbose => 2, -exitcode => 1) },
-	'cas|C'     => \$casbak{backupDir},
+	App::Casbak::CmdlineOptions(\%casbak),
 	'date|d'    => \$ls{date},
 	'long|l'    => \$ls{long},
 	'a'         => \$ls{hidden},
+	'hash=s'    => \$ls{hash},
 ) or pod2usage(2);
 
 $ls{paths}= [ @ARGV ];
@@ -36,11 +35,9 @@ casbak-ls [options] PATH
 
 =head1 OPTIONS
 
+See "casbak --help" for general-purpose options.
+
 =over 20
-
-=item --cas BACKUP_PATH
-
-Use the backup at the specified path rather than the current directory.
 
 =item --date | -d DATESPEC
 
@@ -75,6 +72,14 @@ different.
 casbak displays hidden files by default.  This option is a dummy so that
 people in the habit of "ls -la" don't get an error message.
 
+=item --hash HASH
+
+List a directory by hash rather than by its virtual path or date.
+The format of HASH will depend on which digest algorithm is being used,
+but for the default of sha256 you may specify "enough" of the leading
+hex digits to refer to a distinct directory, rather than the full hash.
+(like in git)
+
 =back
   
 =head1 EXAMPLES
@@ -88,5 +93,9 @@ people in the habit of "ls -la" don't get an error message.
   # Long listing, show hidden files
   casbak ls -la --date 2012-03-01 /home/$USER
   
+=head1 SECURITY
+
+See discussion in "casbak --help"
+
 =cut
 

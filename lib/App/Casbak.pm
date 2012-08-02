@@ -7,7 +7,48 @@ use File::Spec;
 use Carp;
 use Try::Tiny;
 
-our $VERSION= 0.0100;
+our $VERSION= "0.0100";
+
+sub VersionParts {
+	return (int($VERSION), (int($VERSION*100)%100), (int($VERSION*10000)%100));
+}
+
+sub VersionMessage {
+	"casbak backup utility, Copyright 2012 Michael Conrad\n"
+	."App::Casbak version: ".join('.',VersionParts())."\n"
+	."File::CAS version: ".join('.',File::CAS::VersionParts())."\n";
+}
+
+sub CmdlineOptions {
+	my ($paramHash)= shift;
+	my $callerPkg= caller;
+	
+	$paramHash->{verbose}= 0;
+	return (
+		'version|V'      => sub { print VersionMessage(); exit 0; },
+		'help|?'         => sub { require Pod::Usage; eval "package $callerPkg; Pod::Usage::pod2usage(-verbose => 2);"; exit 1; },
+		'verbose|v'      => sub { ++$paramHash->{verbose}; },
+		'quiet|q'        => sub { --$paramHash->{verbose}; },
+		'casbak-dir|D=s' => \$paramHash->{backupDir},
+	);
+}
+
+sub DynLoad {
+	my ($class, $version)= @_;
+	($class =~ /^[A-Za-z0-9:]+$/)
+		or carp "Invalid perl package name: '$class'\n";
+	$version= '' unless defined $version;
+	($version =~ /^[^ ]*$/)
+		or carp "Invalid version string: '$version'\n";
+	$class->can('new') or do {
+		try {
+			eval "use $class $version";
+		}
+		catch {
+			carp "$_";
+		}
+	}
+}
 
 sub backupDir { $_[0]{backupDir} }
 sub cfgFile   { File::Spec->catfile($_[0]->backupDir, 'casbak.conf.yml') }
@@ -99,31 +140,41 @@ sub new {
 			%p= %{$_[0]};
 		} else {
 			-d $_[0] or die "No such backup directory: $_[0]\n";
-			%p= %{ YAML::LoadFile(File::Spec->catfile($_[0], 'casbak.conf.yml')) };
+			%p= ( backupDir => $_[0] );
 		}
 	} else {
 		%p= @_;
 	}
 	
 	$p{backupDir}= '.' unless defined $p{backupDir};
+	if (!$p{cas}) {
+		my $cfgFile= File::Spec->catfile($p{backupDir}, 'casbak.conf.yml');
+		-f $cfgFile or die "Missing config file '$cfgFile'\n";
+		-r $cfgFile or die "Permission denied for '$cfgFile'\n";
+		my $cfg= YAML::LoadFile($cfgFile)
+			or die "Failed to load config file '$cfgFile'\n";
+		%p= (%$cfg, %p);
+	}
 	
 	# coersion from hash to object
 	if (ref $p{cas} eq 'HASH') {
 		my %cp= %{$p{cas}};
 		my $cclass= (delete $cp{CLASS}) || 'File::CAS';
-		$cclass->can('new')
-			# don't eval if we can avoid it
-			or require File::Spec->catfile(split('::',$cclass)).'.pm';
+		my $cclass_ver= delete $cp{VERSION};
+		DynLoad($cclass, $cclass_ver);
 		$cclass->isa('File::CAS')
 			or die "'$cclass' is not a valid CAS class\n";
 		
 		if (ref $cp{store} eq 'HASH') {
-			$cp{store}{CLASS}->can('new')
-				or require File::Spec->catfile(split('::',$cp{store}{CLASS})).'.pm';
+			DynLoad($cp{store}{CLASS}, delete $cp{store}{VERSION});
 			
 			my %validParams= map { $_ => 1 } $cp{store}{CLASS}->_ctor_params;
 			# We don't store the 'pathBase' in the configuration, so that path stays relative to backupDir
 			$cp{store}{pathBase}= $p{backupDir} if $validParams{pathBase};
+		}
+		
+		if (ref $cp{scanner} eq 'HASH') {
+			DynLoad($cp{scanner}{CLASS}, delete $cp{scanner}{VERSION});
 		}
 		
 		#print Data::Dumper::Dumper(\%cp);
@@ -235,7 +286,7 @@ sub import {
 	my ($self, $params)= @_;
 	require DateTime;
 	for my $path (@{$params->{paths}}) {
-		my ($srcPath, $dstPath)= ref $path? ($path->[0], $path->[1]) : ($path, $path);
+		my ($srcPath, $dstPath)= ($path->{real}, $path->{virt});
 		my $srcEnt= $self->cas->scanner->scanDirEnt($srcPath);
 		if ($dstPath ne File::Spec->rootdir) {
 			die "TODO: support non-root paths\n";

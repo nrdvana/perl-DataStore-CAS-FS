@@ -3,18 +3,18 @@
 use strict;
 use warnings;
 
-use Getopt::Long;
+use Getopt::Long 2.24 qw(:config no_ignore_case bundling permute);
 use Pod::Usage;
 use App::Casbak;
 
-my %init;
+my %casbak;
+my %init= ( cas => { store => { CLASS => 'File::CAS::Store::Simple' } } );
 
 GetOptions(
-	'version|V'          => sub { print $App::Casbak::VERSION."\n"; },
-	'help|?'             => sub { pod2usage(-verbose => 2, -exitcode => 1) },
-	'backup-dir|D=s'     => \$init{backupDir},
-	'store|s=s'          => \&parseStore,
-	'dirtype|d=s'        => \&parseDirtype,
+	App::Casbak::CmdlineOptions(\%casbak),
+	'store|s=s'     => \&parseStore,
+	'dirtype|d=s'   => \&parseDirtype,
+	'digest=s'      => \&parseDigest,
 ) or pod2usage(2);
 
 for my $arg (@ARGV) {
@@ -27,7 +27,7 @@ for my $arg (@ARGV) {
 defined $init{cas}{store} and length $init{cas}{store}
 	or pod2usage("Parameter 'cas.store' is required\n");
 
-App::Casbak->init(\%init);
+App::Casbak->init({%casbak, %init});
 exit 0;
 
 sub apply {
@@ -69,6 +69,13 @@ sub parseDirtype {
 	}
 }
 
+sub parseDigest {
+	my ($opt, $digest)= @_;
+	Digest->new($digest)
+		or die "Digest algorithm '$digest' is not available on this system.\n";
+	$init{cas}{store}{digest}= $digest;
+}
+
 __END__
 =head1 NAME
 
@@ -76,25 +83,32 @@ casbak-init - initialize a casbak backup directory
 
 =head1 SYNOPSIS
 
-casbak-init [options] -s STORE_CLASS [name=value [...]]
+casbak-init [options] [-s STORE_CLASS] [-d DIR_CLASS] [name=value ...]
 
-STORE_CLASS is one of: 'Simple'.  (more to come...)
+STORE_CLASS is one of: 'Simple'
+
+DIR_CLASS is one of: 'Universal', 'Minimal', 'Unix'
 
 Each name=value pair is treated as an argument to the constructor of App::Casbak.
-See the documentation for App::Casbak, File::CAS, File::CAS::Store::*
-and File::CAS::Scanner for all available constructor parameters.
 Use dotted notation to build a hierarchy, like "cas.store.digest=sha256".
 
+See the documentation for App::Casbak, File::CAS, File::CAS::Store::*
+and File::CAS::Scanner for all available constructor parameters.
+Most of the important ones are given distinct options and described below.
+
 =head1 OPTIONS
+
+See "casbak --help" for general-purpose options.
 
 =over 8
 
 =item -D
 
-=item --backup-dir DIR
+=item --casbak-dir PATH
 
 Specify an alternate directory in which to initialize the backup.
-The default is the current directory.
+The default is the current directory.  (this is a general option,
+but repeated here for emphasis)
 
 =item -s
 
@@ -107,6 +121,13 @@ not need to specify the full class name, and can use strings like
 Future popular stores might also have some sort of URL spec to both
 indicate the type and connection parameters in one convenient string.
 
+=item --digest ALGORITHM_NAME
+
+This is a shorthand for "cas.store.digest=", and should apply to most
+stores.  This controls which hash algorithm is used to hash the files.
+ALGORITHM_NAME is passed directly to the Digest module constructor.
+See "perldoc Digest" for the list available on your system.
+
 =item -d
 
 =item --dirtype CLASS
@@ -114,8 +135,9 @@ indicate the type and connection parameters in one convenient string.
 File::CAS can use a variety of different classes to encode directories.
 This chooses the default for the store.  You can override it later if needed.
 
-Note that the scanner determines what metadata is collected, and this only
-determines which of that collected metadata will be preserved.
+Note that the filesystem scanner determines what metadata is collected,
+and this only determines which of that collected metadata can/will be
+preserved in the backup.
 
 This is a convenience for setting "cas.scanner.dirClass="
 
@@ -130,17 +152,25 @@ efficient but can store anything you need to store.
 
 use File::CAS::Dir::Minimal, which encodes only a type, name, and value
 (file digest, symlink target, device node, etc) and NO metadata like uid/gid,
-permissions, or even mtime. Note that this is not suitable for incremental
-backups, but is very very compact.
+permissions or even mtime.  This results in a very compact listing which
+doesn't take much disk space.
+
+Note that this is not suitable for incremental ('quick') backups because it
+lacks a modify-timestamp.
 
 =item Unix
 
 use File::CAS::Dir::Unix, which stores all the standard Unix "stat()" values
-in a relatively efficient manner.
+in a relatively efficient (but portable) manner.  Timestamps are not limited
+by 32-bit (which will become a major factor in the coming century).
 
 =back
 
 =back
+
+=head1 SECURITY
+
+See discussion in "casbak --help"
 
 =cut
 
