@@ -10,16 +10,16 @@ use warnings;
 my @passthrough;
 my %cmds= map { $_ => 1 } qw( init import export ls log mount );
 while (my $arg= shift @ARGV) {
-	if (($arg =~ /^-[^-]*V/) or $arg eq '--version') {
+	if (($arg =~ /^-[^-V]*V/) or $arg eq '--version') {
 		require App::Casbak;
 		print App::Casbak::VersionMessage()."\n";
 		exit 0;
 	}
-	if (($arg =~ /^-[^-]*?/) or $arg eq '--help') {
+	if (($arg =~ /^-[^-\?]*\?/) or $arg eq '--help') {
 		require Pod::Usage;
 		Pod::Usage::pod2usage(-verbose => 2, -exitcode => 1);
 	}
-	if (($arg =~ /^-[^-]*D/) or $arg eq '--casbak-dir') {
+	if (($arg =~ /^-[^-D]*D/) or $arg eq '--casbak-dir') {
 		push @passthrough, $arg, shift(@ARGV);
 	}
 	elsif (substr($arg,0,1) eq '-') {
