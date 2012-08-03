@@ -176,6 +176,13 @@ sub calcHash {
 	$self->{store}->calcHash($thing);
 }
 
+sub findHashByPrefix {
+	my ($self, $prefix)= @_;
+	return $prefix if $self->get($prefix);
+	warn "TODO: Implement findHashByPrefix\n";
+	return undef;
+}
+
 sub put {
 	return $_[0]->putScalar($_[1]) unless ref $_[1];
 	return $_[0]->putDir($_[1])    if ref($_[1])->isa('Path::Class::Dir');
