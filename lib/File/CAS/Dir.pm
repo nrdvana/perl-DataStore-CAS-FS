@@ -231,7 +231,7 @@ Get a directory entry by name.
 
 =cut
 sub _entryHash {
-	$_[0]{_entryHash} ||= { map { $_->{name} => $_ } $_[0]->getEntries };
+	$_[0]{_entryHash} ||= { map { $_->name => $_ } $_[0]->getEntries };
 }
 sub getEntry {
 	return $_[0]->_entryHash->{$_[1]};
