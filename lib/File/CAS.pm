@@ -31,14 +31,19 @@ use File::CAS::Scanner;
 
 =head1 SYNOPSIS
 
-File::CAS is simply the interface to other backends.
-All backends inherit from this package.
+File::CAS is an object that implements Content Addressable Storage that behaves
+like a file/directory filesystem.
 
-You can use File::CAS->new as a shortcut to loading
-the appropriate backend and creating instances of it.
+Content Addressable Storage is a concept where a file is identified by a hash of
+its content, and you can only retrieve it if you know the hash you are looking
+for.  File::CAS extends this to also include a directory hierarchy to let you
+look up the file you are interested in by a path name.
 
-  use File::CAS;
-  my $cas= File::CAS->new(engine => 'File', path => '/mnt/usb_external');
+File::CAS is mostly a wrapper around pluggable modules that handle the details.
+The primary object involved is a File::CAS::Store, which performs the hashing
+and storage actions.  There is also File::CAS::Scanner for scanning the real
+filesystem to import directories, and various directory encoding classes like
+File::CAS::Dir::Unix used to serialize and deserialize the directories.
 
 =head1 ATTRIBUTES
 
@@ -102,27 +107,27 @@ sub new {
 		$p{store}= { CLASS => $p{store} };
 	}
 	if (ref $p{store} eq 'HASH') {
-		my %sp= %{$p{store}};
-		my $sclass= delete $sp{CLASS} || 'File::CAS::Store::Simple';
-		$sclass->can('new')
-			# don't eval if we can avoid it...
-			or require File::Spec->catfile(split('::',$sclass)).'.pm';
-		$sclass->isa('File::CAS::Store')
-			or die "'$sclass' is not a valid Store class\n";
-		$p{store}= $sclass->new(\%sp);
+		my %storeParams= %{$p{store}};
+		my $storeClass= delete $storeParams{CLASS} || 'File::CAS::Store::Simple';
+		$storeClass->can('new')
+			# eval "require $storeClass", but try not to use eval if we can avoid it...
+			or require File::Spec->catfile(split('::',$storeClass)).'.pm';
+		$storeClass->isa('File::CAS::Store')
+			or die "'$storeClass' is not a valid Store class\n";
+		$p{store}= $storeClass->new(\%storeParams);
 	}
 	
 	# coercion of scanner parameters to Scanner object
 	$p{scanner} ||= { };
 	if (ref $p{scanner} eq 'HASH') {
-		my %sp= %{$p{scanner}};
-		my $sclass= delete $sp{CLASS} || 'File::CAS::Scanner';
-		$sclass->can('new')
+		my %scannerParams= %{$p{scanner}};
+		my $scannerClass= delete $scannerParams{CLASS} || 'File::CAS::Scanner';
+		$scannerClass->can('new')
 			# don't eval if we can avoid it...
-			or require File::Spec->catfile(split('::',$sclass)).'.pm';
-		$sclass->isa('File::CAS::Scanner')
-			or die "'$sclass' is not a valid Scanner class\n";
-		$p{scanner}= $sclass->new(\%sp);
+			or require File::Spec->catfile(split('::',$scannerClass)).'.pm';
+		$scannerClass->isa('File::CAS::Scanner')
+			or die "'$scannerClass' is not a valid Scanner class\n";
+		$p{scanner}= $scannerClass->new(\%scannerParams);
 	}
 	
 	$class->_ctor(\%p);
