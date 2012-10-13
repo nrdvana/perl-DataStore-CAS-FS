@@ -1,11 +1,18 @@
 package App::Casbak;
 use strict;
 use warnings;
-use YAML ();
 use File::CAS;
 use File::Spec;
 use Carp;
 use Try::Tiny;
+
+our $LogLevel= 0;
+sub Error { return unless $LogLevel > -3; print STDERR "Error: ".join(" ", @_)."\n"; }
+sub Warn  { return unless $LogLevel > -2; print STDERR "Warning: ".join(" ", @_)."\n"; }
+sub Note  { return unless $LogLevel > -1; print STDERR "Notice: ".join(" ", @_)."\n"; }
+sub Info  { return unless $LogLevel >= 1; print STDERR "Info: ".join(" ", @_)."\n"; }
+sub Debug { return unless $LogLevel >= 2; print STDERR "Debug: ".Data::Dumper::Dumper(@_); }
+sub Trace { return unless $LogLevel >= 3; print STDERR "Trace: ".Data::Dumper::Dumper(@_); }
 
 our $VERSION= "0.0100";
 
@@ -27,22 +34,23 @@ sub CmdlineOptions {
 	return (
 		'version|V'      => sub { print VersionMessage(); exit 0; },
 		'help|?'         => sub { require Pod::Usage; Pod::Usage::pod2usage(-verbose => 2); exit 1; },
-		'verbose|v'      => sub { ++$paramHash->{verbose}; },
-		'quiet|q'        => sub { --$paramHash->{verbose}; },
+		'verbose|v'      => sub { ++$LogLevel; },
+		'quiet|q'        => sub { --$LogLevel; },
 		'casbak-dir|D=s' => \$paramHash->{backupDir},
 	);
 }
 
 sub DynLoad {
-	my ($class, $version)= @_;
-	($class =~ /^[A-Za-z0-9:]+$/)
-		or carp "Invalid perl package name: '$class'\n";
+	my ($module, $version)= @_;
+	Trace("Loading module '$module' (version $version)");
+	($module =~ /^[A-Za-z0-9:]+$/)
+		or carp "Invalid perl package name: '$module'\n";
 	$version= '' unless defined $version;
 	($version =~ /^[^ ]*$/)
 		or carp "Invalid version string: '$version'\n";
-	$class->can('new') or do {
+	$module->can('new') or do {
 		try {
-			eval "use $class $version";
+			eval "use $module $version";
 		}
 		catch {
 			carp "$_";
@@ -148,6 +156,7 @@ sub new {
 	
 	$p{backupDir}= '.' unless defined $p{backupDir};
 	if (!$p{cas}) {
+		require YAML;
 		my $cfgFile= File::Spec->catfile($p{backupDir}, 'casbak.conf.yml');
 		-f $cfgFile or die "Missing config file '$cfgFile'\n";
 		-r $cfgFile or die "Permission denied for '$cfgFile'\n";
@@ -239,7 +248,7 @@ sub canonicalDate {
 
 sub init {
 	my ($class, $params)= @_;
-	#print Data::Dumper->Dumper($params)."\n";
+	Trace('Casbak->init(): ', $params);
 	my $dir= $params->{backupDir} || '.';
 	my @entries= grep { $_ ne '.' && $_ ne '..' } <$dir/*>;
 	scalar(@entries)
@@ -259,8 +268,9 @@ sub init {
 	
 	my $self= $class->new($params);
 	
-	# success? then save out the parameters!
+	# success? then save out the parameters
 	my $fd;
+	require YAML;
 	my $cfg= YAML::Dump($self->getConfig);
 	open($fd, ">", $self->cfgFile) && (print $fd $cfg) && close($fd)
 		or die "Error writing configuration file '".$self->cfgFile."': $!\n";
@@ -268,105 +278,6 @@ sub init {
 		or die "Error writing log file: $!\n";
 	open($fd, ">", $self->rootsFile) && close($fd)
 		or die "Error writing snapshots file: $!\n";
-}
-
-sub ls {
-	my ($self, $params)= @_;
-	my $prevRootSpec= '\0';
-	my $root;
-	use Data::Dumper;
-	print Dumper($params);
-	for my $item (@{$params->{paths}}) {
-		# If user requested a specific root, try to load it
-		if (defined $item->{hash}) {
-			if ($prevRootSpec ne $item->{hash}) {
-				my $hash= $self->cas->findHashByPrefix($item->{hash});
-				defined $hash or die "Invalid or ambiguous hash: '$item->{hash}'\n";
-				$root= $self->cas->getDir($hash)
-					or die "Missing root directory: #$hash\n";
-				$prevRootSpec= $item->{hash};
-			}
-		}
-		# if user requested root at a specific timestamp, try to load it
-		elsif (defined $item->{date}) {
-			if ($prevRootSpec ne $item->{date}) {
-				my $snap= $self->getSnapshotOrDie($item->{date});
-				$root= $self->cas->getDir($snap->[1])
-					or die "Missing root directory: #$snap->[1]\n";
-				$prevRootSpec= $item->{date};
-			}
-		}
-		# default to "now" if no date or hash was specified
-		elsif (!$root) {
-			my $snap= $self->getSnapshotOrDie('0D');
-			$root= $self->cas->getDir($snap->[1])
-				or die "Missing root directory: #$snap->[1]\n";
-			$prevRootSpec= '0D';
-		}
-		# Now, look up this path in the chosen root
-		$self->printDirListing({ %$params, root => $root, path => $item->{path} });
-	}
-}
-
-sub printDirListing {
-	my ($self, $params)= @_;
-	my $path= $params->{path};
-	$params->{root}->isa('File::CAS::Dir')
-		or die "Root is not a directory\n";
-	my ($dirEnt, $dir);
-	my @path= grep { defined && length } split '/', $path
-		if (defined($path) && length($path));
-	if (@path) {
-		$dirEnt= $params->{root}->find(@path)
-			or die "No such file or directory: '$path'\n";
-		if ($dirEnt->type eq 'dir' && defined $dirEnt->hash) {
-			$dir= $self->cas->getDir($dirEnt->hash);
-		}
-	}
-	else {
-		$path= '/';
-		$dirEnt= File::CAS::Dir::Entry->new(name => '/', type => 'dir', hash => $params->{root}->hash, size => $params->{root}->size);
-		$dir= $params->{root};
-	}
-	
-	if ($dir and !$params->{directory}) {
-		# list directory contents
-		print "$path:\n";
-		print $self->formatDirEntry($_, $params)."\n" for $dir->getEntries;
-	}
-	else {
-		# list single entry
-		print $self->formatDirEntry($dirEnt, $params)."\n";
-	}
-}
-
-sub formatDirEntry {
-	my ($self, $dirEnt, $params)= @_;
-	return $dirEnt->name
-	#	if $params->{long};
-}
-
-sub import {
-	my ($self, $params)= @_;
-	use Data::Dumper;
-	print Dumper($params);
-	require DateTime;
-	for my $path (@{$params->{paths}}) {
-		my ($srcPath, $dstPath)= ($path->{real}, $path->{virt});
-		my $srcEnt= $self->cas->scanner->scanDirEnt($srcPath);
-		if ($dstPath ne File::Spec->rootdir) {
-			die "TODO: support non-root paths\n";
-		}
-		
-		if ($srcEnt->{type} eq 'dir') {
-			my $hash= $self->cas->putDir($srcPath);
-			my $now= DateTime->now;
-			$self->addSnapshot($now, $hash);
-		} else {
-			$dstPath ne File::Spec->rootdir
-				or die "Only directories can be stored as the root directory\n";
-		}
-	}
 }
 
 1;

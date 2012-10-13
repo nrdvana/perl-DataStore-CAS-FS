@@ -256,8 +256,6 @@ package File::CAS::Dir::Entry;
 use strict;
 use warnings;
 
-use DateTime;
-
 =head1 Dir::Entry
 
 File::CAS::Dir::Entry is a super-light-weight class.  More of an interface, really.
@@ -371,8 +369,8 @@ sub new {
 	unix_uid unix_user unix_gid unix_group unix_mode unix_atime unix_ctime unix_mtime unix_dev unix_inode unix_nlink unix_blocksize unix_blocks :;
 }
 
-sub createDate { DateTime->from_epoch( epoch => $_[0]->create_ts ) }
-sub modifyDate { DateTime->from_epoch( epoch => $_[0]->modify_ts ) }
+sub createDate { require DateTime; DateTime->from_epoch( epoch => $_[0]->create_ts ) }
+sub modifyDate { require DateTime; DateTime->from_epoch( epoch => $_[0]->modify_ts ) }
 sub asHash { ${$_[0]} }
 
 1;

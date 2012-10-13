@@ -6,6 +6,7 @@ use warnings;
 use Getopt::Long 2.24 qw(:config no_ignore_case bundling permute);
 use Pod::Usage;
 use App::Casbak;
+use App::Casbak::Ls;
 
 my %casbak;
 my @paths;
