@@ -155,6 +155,10 @@ sub _ctor {
 		or croak "Missing/invalid parameter 'store'";
 	defined $p->{scanner} and $p->{scanner}->isa('File::CAS::Scanner')
 		or croak "Missing/invalid parameter 'scanner'";
+	$p->{_dircache}= {};
+	$p->{_dircache_recent}= [];
+	$p->{_dircache_recent_idx}= 0;
+	$p->{_dircache_recent_mask}= 63;
 	bless $p, $class;
 }
 
@@ -164,8 +168,29 @@ sub get {
 }
 
 sub getDir {
-	# my ($self, $hash)= @_;
-	return File::CAS::Dir->new($_[0]{store}->get($_[1]));
+	my ($self, $hash)= @_;
+	my $dircache= $self->{_dircache};
+	my $ret= $dircache->{$hash};
+	unless (defined $ret) {
+		$ret= File::CAS::Dir->new($_[0]{store}->get($_[1]));
+		if ($ret) {
+			Scalar::Util::weaken($dircache->{$hash}= $ret);
+			# We don't want a bunch of dead keys laying around in our cache, so we use a clever trick
+			# of attaching an object to the directory whose destructor removes the key from our cache.
+			# We use a blessed coderef to prevent seeing circular references while debugging.
+			$ret->{_dircache_cleanup}= bless sub { delete $dircache->{$hash} }, 'File::CAS::DircacheCleanup';
+		}
+	}
+	# Hold a reference to any dir requested in the last N getDir calls.
+	$self->{_dircache_recent}[$self->{_dircache_recent_idx}++ & $self->{_dircache_recent_mask}]= $ret;
+	$ret;
+}
+
+sub _clearDirCache {
+	my ($self)= @_;
+	$self->{_dircache}= {};
+	$self->{_dircache_recent}= [];
+	$self->{_dircache_recent_idx}= 0;
 }
 
 sub calcHash {
@@ -284,5 +309,11 @@ See http://dev.perl.org/licenses/ for more information.
 
 
 =cut
+
+package File::CAS::DircacheCleanup;
+
+sub DESTROY {
+	&{$_[0]}; # Our 'object' is actually a blessed coderef that removes us from the cache.
+}
 
 1;
