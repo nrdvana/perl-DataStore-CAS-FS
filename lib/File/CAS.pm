@@ -243,6 +243,109 @@ sub putDir {
 	$self->scanner->storeDir($self, $dir, $dirHint);
 }
 
+=head2 resolvePath( $rootDirEnt, \@pathNames | $pathString, [ \$error_out ] )
+
+Returns an arrayref of File::CAS:Dir::Entry objects corresponding to the
+specified path, starting with $rootDirEnt.  This function essentially
+performs the same operation as 'File::Spec::realpath', but for the virtual
+filesystem, and gives you an array of directory entries instead of a string.
+
+If the path contains symlinks or '..', they will be resolved properly.
+Symbolic links are not followed if they are the final element of the path.
+To force symbolic links to be resolved, simply append '' to @pathNames, or
+append '/' to $pathString.
+
+If the path does not exist, or cannot be resolved for some reason, this
+method returns undef, and the error is stored in the optional parameter
+$error_out.  If you would rather die on an unresolved path, use
+'resolvePathOrDie()'.
+
+If you want symbolic links to resolve properly, $rootDirEnt must be the
+filesystem root directory. Passing any other directory will cause a chroot-like
+effect which you may or may not want.
+
+=head2 resolvePathOrDie
+
+Same as resolvePath, but calls 'croak' with the error message if the
+resolve fails.
+
+=cut
+
+sub resolvePath {
+	my ($self, $rootDirEnt, $path, $error_out)= @_;
+	my $ret= $self->_resolvePath($rootDirEnt, $path);
+	return $ret if ref($ret) eq 'ARRAY';
+	$$error_out= $ret;
+	return undef;
+}
+
+sub resolvePathOrDie {
+	my ($self, $rootDirEnt, $path)= @_;
+	my $ret= $self->_resolvePath($rootDirEnt, $path);
+	return $ret if ref($ret) eq 'ARRAY';
+	croak $ret;
+}
+
+sub _resolvePath {
+	my ($self, $rootDirEnt, $path)= @_;
+	my @subPath= ref($path)? @$path : File::Spec->splitdir($path);
+	my @dirEnts= ( $rootDirEnt );
+	die "Root directory must be a directory"
+		unless $rootDirEnt->type eq 'dir';
+	while (@subPath) {
+		my $ent= $dirEnts[-1];
+		my $dir;
+		
+		if ($ent->type eq 'symlink') {
+			# Sanity check on symlink entry
+			my $target= $ent->linkTarget;
+			defined $target and length $target
+				or return 'Invalid symbolic link "'.$ent->name.'"';
+			
+			# Resolve the path in the link before continuing on the remainder of the current path
+			unshift @subPath, File::Spec->splitdir($target);
+			pop @dirEnts;
+			
+			# If an absolute link, we start over from the root
+			@dirEnts= ( $rootDirEnt )
+				if (substr($target, 0, 1) eq '/');
+			
+			next;
+		}
+		
+		return 'Cannot descend into directory entry "'.$ent->name.'" of type "'.$ent->type.'"'
+			unless ($ent->type eq 'dir');
+		
+		# If no hash listed, directory was not stored. (i.e. --exclude option during import)
+		defined $ent->hash
+			or return 'Directory "'.$ent->name.'" is not present in storage';
+		
+		$dir= $self->getDir($ent->{hash});
+		defined $dir
+			or return 'Failed to open directory "'.$ent->name.'"';
+		
+		my $name;
+		do {
+			$name= shift @subPath;
+			defined $name
+				or next;
+		} while (@subPath and (!length $name or $name eq '.'));
+		
+		if ($name eq '..') {
+			die "Cannot access '..' at root directory"
+				unless @dirEnts > 1;
+			pop @dirEnts;
+		}
+		else {
+			my $ent= $dir->getEntry($name);
+			defined $ent
+				or return 'No such directory entry "'.$name.'"';
+			push @dirEnts, $ent;
+		}
+	}
+	\@dirEnts;
+}
+
 sub calcHashFile {
 	
 }
