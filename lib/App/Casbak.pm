@@ -6,6 +6,8 @@ use File::Spec;
 use Carp;
 use Try::Tiny;
 
+require App::Casbak::ImportFile;
+
 our $LogLevel= 0;
 sub Error { return unless $LogLevel > -3; print STDERR "Error: ".join(" ", @_)."\n"; }
 sub Warn  { return unless $LogLevel > -2; print STDERR "Warning: ".join(" ", @_)."\n"; }
@@ -186,7 +188,6 @@ sub new {
 			DynLoad($cp{scanner}{CLASS}, delete $cp{scanner}{VERSION});
 		}
 		
-		#print Data::Dumper::Dumper(\%cp);
 		$p{cas}= $cclass->new(\%cp);
 	}
 	

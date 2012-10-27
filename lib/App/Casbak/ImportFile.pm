@@ -5,7 +5,7 @@ use warnings;
 # NOTE: The current package is set to App::Casbak
 #       These methods will show up in the main Casbak class.
 
-sub import {
+sub importFile {
 	my ($self, $params)= @_;
 	Trace('Casbak->import(): ', $params);
 	require DateTime;

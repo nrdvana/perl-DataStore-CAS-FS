@@ -30,7 +30,7 @@ GetOptions(
 scalar(@paths)
 	or pod2usage("No paths specified");
 
-App::Casbak->new(\%casbak)->import(\%import);
+App::Casbak->new(\%casbak)->importFile(\%import);
 exit 0;
 
 __END__
