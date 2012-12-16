@@ -9,6 +9,7 @@ use Try::Tiny;
 require App::Casbak::ImportFile;
 
 our $LogLevel= 0;
+sub SetLogLevel { (undef, $LogLevel)= @_; }
 sub Error { return unless $LogLevel > -3; print STDERR "Error: ".join(" ", @_)."\n"; }
 sub Warn  { return unless $LogLevel > -2; print STDERR "Warning: ".join(" ", @_)."\n"; }
 sub Note  { return unless $LogLevel > -1; print STDERR "Notice: ".join(" ", @_)."\n"; }
@@ -28,35 +29,86 @@ sub VersionMessage {
 	."File::CAS version: ".join('.',File::CAS::VersionParts())."\n";
 }
 
-sub CmdlineOptions {
-	my ($paramHash)= shift;
-	my $callerPkg= caller;
-	
-	$paramHash->{verbose}= 0;
-	return (
-		'version|V'      => sub { print VersionMessage(); exit 0; },
-		'help|?'         => sub { require Pod::Usage; Pod::Usage::pod2usage(-verbose => 2); exit 1; },
-		'verbose|v'      => sub { ++$LogLevel; },
-		'quiet|q'        => sub { --$LogLevel; },
-		'casbak-dir|D=s' => \$paramHash->{backupDir},
+sub ParseOptions {
+	my ($class, $argList)= @_;
+	my %opts= (
+		verbosity   => 0,
+		backupDir   => '.',
+		wantHelp    => 0,
+		wantVersion => 0,
 	);
+	
+	require Getopt::Long;
+	my $save= Getopt::Long::Configure(qw: no_ignore_case bundling require_order :);
+	Getopt::Long::GetOptionsFromArray($argList,
+		'version|V'      => \$opts{wantVersion},
+		'help|?'         => \$opts{wantHelp},
+		'verbose|v'      => sub { ++$opts{verbosity} },
+		'quiet|q'        => sub { --$opts{verbosity} },
+		'casbak-dir|D=s' => \$opts{backupDir},
+	)
+	or return undef;
+	Getopt::Long::Configure($save);
+	\%opts;
 }
 
-sub DynLoad {
-	my ($module, $version)= @_;
-	Trace("Loading module '$module' (version $version)");
-	($module =~ /^[A-Za-z0-9:]+$/)
+# Load a package for a casbak command (like 'ls', 'init', etc)
+# Returns true on success, false on nonexistent, and throws
+# an exception if the package exists but fails to load.
+sub LoadSubcommand {
+	my ($class, $cmdName)= @_;
+	my $pkg= 'App::Casbak::Cmd::'.uc(substr($cmdName,0,1)).lc(substr($cmdName,1));
+	try {
+		LoadModule($pkg);
+		1;
+	}
+	catch {
+		# Try to distinguish between module errors and nonexistent modules.
+		my $commands= $class->FindAllCommands();
+		for (@$commands) {
+			if ($_ eq $pkg) {
+				# looks like a bug in the package.
+				die "$_";
+			}
+		}
+		0;
+	};
+}
+
+sub FindAllCommands {
+	my ($class)= @_;
+	my %pkgSet= ();
+	# Search all include paths for packages named "App::Casbak::Cmd::*"
+	for (@INC) {
+		my $path= File::Spec->catdir($_, 'App', 'Casbak', 'Cmd');
+		if (opendir(my $dh, $path)) {
+			$pkgSet{"App::Casbak::Cmd::".substr($_,0,-3)}= 1
+				for grep { $_ =~ /[.]pm$/ } readdir($dh);
+		}
+	}
+	[ keys %pkgSet ]
+}
+
+# First param is THIS CLASS (it is a class method)
+# Second param is the package name you want to load.
+# Throws an exception on failure.
+sub LoadModule {
+	my ($class, $module, $version)= @_;
+	Trace("Loading module", $module, version => $version);
+
+	($module =~ /^[A-Za-z0-9_:]+$/)
 		or carp "Invalid perl package name: '$module'\n";
-	$version= '' unless defined $version;
-	($version =~ /^[^ ]*$/)
-		or carp "Invalid version string: '$version'\n";
-	$module->can('new') or do {
-		try {
-			eval "use $module $version";
-		}
-		catch {
-			carp "$_";
-		}
+
+	if (defined $version) {
+		($version =~ /^[^ ]*$/)
+			or carp "Invalid version string: '$version'\n";
+		$version= ' '.$version;
+	}
+	else { $version= ''; }
+	
+	local $@;
+	if (!eval "require $module$version;") {
+		die "$@";
 	}
 }
 

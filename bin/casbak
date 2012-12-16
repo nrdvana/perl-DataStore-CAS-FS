@@ -2,44 +2,73 @@
 
 use strict;
 use warnings;
+require App::Casbak;
 
-# Since this command passes through to another, and any delay
-# here just adds to the user's annoyance, we try not to load
-# any modules unless we absolutely have to.
-# Thus, custom args processing...
-my @passthrough;
-my %cmds= map { $_ => 1 } qw( init import export ls log mount );
-while (my $arg= shift @ARGV) {
-	if (($arg =~ /^-[^-V]*V/) or $arg eq '--version') {
-		require App::Casbak;
-		print App::Casbak::VersionMessage()."\n";
-		exit 0;
-	}
-	if (($arg =~ /^-[^-\?]*\?/) or $arg eq '--help') {
-		require Pod::Usage;
-		Pod::Usage::pod2usage(-verbose => 2, -exitcode => 1);
-	}
-	if (($arg =~ /^-[^-D]*D/) or $arg eq '--casbak-dir') {
-		push @passthrough, $arg, shift(@ARGV);
-	}
-	elsif (substr($arg,0,1) eq '-') {
-		push @passthrough, $arg;
-	}
-	elsif ($cmds{$arg}) {
-		push @passthrough, @ARGV;
-		exec( "casbak-$arg", @passthrough )
-			or exec( "casbak-$arg.pl", @passthrough )
-			or die "Error: Failed to execute casbak-$arg: $?\n";
-	}
-	else {
-		die "Unknown command '$arg'\n"
-			."Commands are : ".join(', ', keys %cmds)."\n"
-			."See --help\n";
-	}
+sub pod2usage {
+	# lazy-load this module
+	require Pod::Usage;
+	Pod::Usage::pod2usage(@_);
 }
 
-require Pod::Usage;
-Pod::Usage::pod2usage(-verbose => 0, -exitcode => 2);
+my $casbakOpts= App::Casbak->ParseOptions(\@ARGV)
+	or pod2usage(2);
+
+App::Casbak->SetLogLevel($casbakOpts->{verbosity});
+
+if ($casbakOpts->{wantVersion}) {
+	print App::Casbak->VersionMessage();
+	exit 1;
+}
+
+my $subcmd= shift @ARGV;
+if (!$subcmd) {
+	if ($casbakOpts->{wantHelp}) {
+		my $source= getPodWithCommands();
+		# Create a virtual filehandle that reads this string we built.
+		# (because pod2usage requires a file handle)
+		open my $mem, '<', \$source;
+
+		pod2usage(-input => $mem, -verbose => 2, -exitcode => 1);
+	}
+	pod2usage("No command specified\n");
+}
+
+my $cmdClass= App::Casbak->LoadSubcommand($subcmd)
+	or pod2usage("No such command \"$subcmd\"\n");
+
+$cmdClass->run($casbakOpts, @ARGV);
+
+sub getPodWithCommands {
+	# First, use dynamic module loading to find all the command classes
+	my $commands= App::Casbak->FindAllCommands();
+	
+	# Now, format each command using POD notation, to make the body of the COMMANDS section.
+	my $commandsPod=
+		"=over 12\n"
+		."\n"
+		.join('', map {
+			"=item ".lc($_)."\n"
+			."\n"
+			.do { try { App::Casbak->LoadModule($_); $_->ShortDescription } catch { "(error loading module)" }; }."\n"
+			."\n"
+		} sort @$commands)
+		."\n"
+		."=back\n";
+
+	# Now read the source of this script
+	my $source= do {
+		open(my $f, '<', __FILE__)
+			or die "Unable to read script (".__FILE__.") to extract help text: $!\n";
+		local $/= undef;
+		<$f>;
+	};
+	
+	# And substitute the $commandsPod into the COMMANDS section
+	($source =~ s/=head1 COMMANDS.*=head1/=head1 COMMANDS\n\n$commandsPod\n=head1/)
+		or warn "Internal error: failed to substitute command listing into help text.";
+	
+	return $source;
+}
 
 __END__
 
@@ -52,38 +81,13 @@ casbak - backup tool using File::CAS
   casbak [--casbak-dir=PATH] [-v|-q] COMMAND [--help]
   casbak --version
   casbak --help
-  
-  Commands: init, import, export, log, ls, mount
-  
+
+Use "casbak --help" for a list of all installed commands.
+
 =head1 COMMANDS
 
-=over 12
-
-=item init
-
-Initialize a backup directory
-
-=item import
-
-Import files into a backup
-
-=item export
-
-Export files from a backup back to the filesystem
-
-=item log
-
-View a log of all modifications performed on the backup directory
-
-=item ls
-
-List files in the backup
-
-=item mount
-
-Use FUSE to mount a snapshot from the backup as a filesystem
-
-=back
+This list is dynamically generated from the installed modules by the casbak
+script.  See --help
 
 =head1 OPTIONS
 
