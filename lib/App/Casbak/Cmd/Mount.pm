@@ -1,7 +1,36 @@
-#! /usr/bin/env perl
-
+package App::Casbak::Cmd::Mount;
 use strict;
 use warnings;
+use Try::Tiny;
+
+use parent 'App::Casbak::Cmd';
+
+sub ShortDescription {
+	'Mount a backup as a virtual filesystem'
+}
+
+sub mountConfig { $_[0]{mountConfig} }
+sub date        { $_[0]{mountConfig}{date} }
+sub root        { $_[0]{mountConfig}{rootHash}
+
+sub _ctor {
+	my ($class, $params)= @_;
+
+	$params->{mountConfig} ||= {};
+	$params->{mountConfig}{date} ||= {};
+	$params->{mountConfig}{root}{store} ||= { CLASS => 'File::CAS::Store::Simple' };
+
+	$class->SUPER::_ctor($params);
+}
+
+
+
+
+1;
+
+__END__
+#! /usr/bin/env perl
+
 
 use File::CAS;
 use File::CAS::Fuse;

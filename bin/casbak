@@ -1,175 +1,79 @@
 #! /usr/bin/env perl
+#
+# Casbak main script.
+#
+# This is a simple wrapper around App::Casbak::Cmd.
+# See that package for details and usage. (or use --help)
+#
+# Exit codes:
+#  0 - successful operation
+#  1 - no error, but no operation performed (but see --allow-noop)
+#  2 - fatal error in usage or parameters
+#  3 - fatal error in execution
+#
+# All *diagnostic* output of this command is on STDERR, including status messages
+# about the progress of a backup.
+#
+# You will only see data on STDOUT if you request specific output, like with
+#  --help, --version, or commands like 'log' or 'ls'.
 
 use strict;
 use warnings;
-require App::Casbak;
+use Try::Tiny;
+use App::Casbak;
+use App::Casbak::Cmd;
+
+my $cmd;
 
 sub pod2usage {
 	# lazy-load this module
 	require Pod::Usage;
-	Pod::Usage::pod2usage(@_);
+	
+	# Get the POD text from whichever command we're running
+	my $pod= $cmd->getHelpPOD();
+	open my $stream, '<', \$pod;
+	
+	Pod::Usage::pod2usage(-input => $stream, @_);
 }
 
-my $casbakOpts= App::Casbak->ParseOptions(\@ARGV)
-	or pod2usage(2);
+$cmd= App::Casbak::Cmd->new;
 
-App::Casbak->SetLogLevel($casbakOpts->{verbosity});
+try {
+	# This command object will re-bless itself into a subclass of App::Casbak::Cmd
+	#  based on which sub-command the user specified, which gives us appropriate
+	#  help text in case of errors.
+	$cmd->applyArguments(@ARGV);
+}
+catch {
+	# Exceptions during 'applyArguments' indicate invalid arguments
+	my $err= "$_";
+	pod2usage(-message => $err, -exitcode => 2);
+};
 
-if ($casbakOpts->{wantVersion}) {
+# App::Casbak has globally-defined logging functions, and we enable/disable them
+#  with this class method.
+App::Casbak->SetLogLevel($cmd->verbosity);
+
+# When trace is enabled, dump the complete internal structure of the command object
+App::Casbak::Trace($cmd);
+
+# They specified '--version'. Print it and exit.
+if ($cmd->wantVersion) {
 	print App::Casbak->VersionMessage();
-	exit 1;
+	exit($cmd->allowNoop? 0 : 1);
 }
 
-my $subcmd= shift @ARGV;
-if (!$subcmd) {
-	if ($casbakOpts->{wantHelp}) {
-		my $source= getPodWithCommands();
-		# Create a virtual filehandle that reads this string we built.
-		# (because pod2usage requires a file handle)
-		open my $mem, '<', \$source;
-
-		pod2usage(-input => $mem, -verbose => 2, -exitcode => 1);
-	}
-	pod2usage("No command specified\n");
+# They specified '--help'.  Print the full POD and exit.
+if ($cmd->wantHelp) {
+	pod2usage(-verbose => 2, -exitcode => ($cmd->allowNoop? 0 : 1));
 }
 
-my $cmdClass= App::Casbak->LoadSubcommand($subcmd)
-	or pod2usage("No such command \"$subcmd\"\n");
-
-$cmdClass->run($casbakOpts, @ARGV);
-
-sub getPodWithCommands {
-	# First, use dynamic module loading to find all the command classes
-	my $commands= App::Casbak->FindAllCommands();
-	
-	# Now, format each command using POD notation, to make the body of the COMMANDS section.
-	my $commandsPod=
-		"=over 12\n"
-		."\n"
-		.join('', map {
-			"=item ".lc($_)."\n"
-			."\n"
-			.do { try { App::Casbak->LoadModule($_); $_->ShortDescription } catch { "(error loading module)" }; }."\n"
-			."\n"
-		} sort @$commands)
-		."\n"
-		."=back\n";
-
-	# Now read the source of this script
-	my $source= do {
-		open(my $f, '<', __FILE__)
-			or die "Unable to read script (".__FILE__.") to extract help text: $!\n";
-		local $/= undef;
-		<$f>;
-	};
-	
-	# And substitute the $commandsPod into the COMMANDS section
-	($source =~ s/=head1 COMMANDS.*=head1/=head1 COMMANDS\n\n$commandsPod\n=head1/)
-		or warn "Internal error: failed to substitute command listing into help text.";
-	
-	return $source;
+# Try running the command.  Exceptons are printed as-is, but we also want to exit with 3.
+try {
+	$cmd->run();
 }
-
-__END__
-
-=head1 NAME
-
-casbak - backup tool using File::CAS
-
-=head1 SYNOPSIS
-
-  casbak [--casbak-dir=PATH] [-v|-q] COMMAND [--help]
-  casbak --version
-  casbak --help
-
-Use "casbak --help" for a list of all installed commands.
-
-=head1 COMMANDS
-
-This list is dynamically generated from the installed modules by the casbak
-script.  See --help
-
-=head1 OPTIONS
-
-The following options are available for all casbak commands:
-
-=over 20
-
-=item -D
-
-=item --casbak-dir PATH
-
-Path to the backup directory.  Defaults to "."
-
-=item -v
-
-=item --verbose
-
-Enable output messages, and can be specified multiple times to enable
-'INFO', then 'DEBUG', then 'TRACE'.  Verbose and quiet cancel eachother.
-
-=item -q
-
-=item --quiet
-
-Disable output messages, and can be specified multiple times to disable
-'NOTICE', then 'WARNING', then 'ERROR'.  Verbose and quiet cancel eachother.
-
-=item -V
-
-=item --version
-
-Print the version of casbak (the utility) and File::CAS (the perl module) and exit.
-
-=item -?
-
-=item --help
-
-Print this help, or help for the sub-command.
-
-=back
-
-=head1 EXAMPLES
-
-  cd /path/to/backup
-
-  # Backup the directories /usr/bin, /usr/local/bin, and /bin
-  # storing each in the same-named location of the backup's hierarchy
-  casbak import /usr/bin /usr/local/bin /bin
-  
-  # Backup the directory /tmp/new_bin as /bin in the backup's hierarchy
-  casbak import /tmp/new_bin --as /bin
-  
-  # Restore the directory /etc from 3 days ago
-  casbak export --date=3D /etc/ /etc/
-  
-  # List all modifications that have been performed on this backup
-  casbak log
-  
-  # List files in /usr/local/share from 2 weeks ago without extracting them
-  casbak ls -d 2W /usr/local/share
-  
-  # List files in /usr/local/share as of March 1st
-  casbak ls --date 2012-03-01 /usr/local/share
-  
-  # Mount the snapshot of the filesystem from a year ago (using FUSE)
-  casbak mount -d 1Y /mnt/temp
-
-=head1 SECURITY
-
-Some care should be taken regarding the permissions of the backup directory.
-Casbak uses a plugin-heavy design.  If an attacker were able to modify the
-configuration file in the backup directory, they could cause arbitrary perl
-modules to be loaded.  If the attacker also had control of a directory in
-perl's library path (or the environment variables of the backup script),
-they would be able to execute arbitrary code as the user running casbak.
-There may also be other exploits possible by modifying the backup config
-file.  Ensure that only highly priveleged users have access to the backup
-directory.
-
-(Really, these precautions are common sense, as someone able to modify a
- backup, or access password files stored in the backup, or modify the
- environment of a backup script, or write to your perl module path would
- have a myriad of other ways to compromise your system.)
-
-=cut
+catch {
+	print STDERR "$_\n"
+	exit 3;
+};
+exit 0;

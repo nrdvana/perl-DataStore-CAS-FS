@@ -1,50 +1,80 @@
-#! /usr/bin/env perl
-
+package App::Casbak::Cmd::Ls;
 use strict;
 use warnings;
+use Try::Tiny;
 
-use Getopt::Long 2.24 qw(:config no_ignore_case bundling permute);
-use Pod::Usage;
-use App::Casbak;
-use App::Casbak::Ls;
+use parent 'App::Casbak::Cmd';
 
-my %casbak;
-my @paths;
-my %ls= ( paths => \@paths );
+sub ShortDescription {
+	'List virtual directories within a backup'
+}
+
+sub lsConfig { $_[0]{lsConfig} }
+sub paths { $_[0]{lsConfig}{paths} }
+sub date { $_[0]{lsConfig}{date}= $_[1] if @_ > 1; $_[0]{lsConfig}{date}; }
+sub hash { $_[0]{lsConfig}{hash}= $_[1] if @_ > 1; $_[0]{lsConfig}{hash}; }
+
+sub _ctor {
+	my ($class, $params)= @_;
+
+	$params->{lsConfig} ||= {};
+	$params->{lsConfig}{paths} ||= [];
+
+	$class->SUPER::_ctor($params);
+}
 
 sub add_path {
-	if ($_[0] =~ m|^@([^/]+)(/.*)$|) {
-		push @paths, { date => $1, path => $2 };
-	} elsif ($_[0] =~ m|^#([^/]+)(/.*)$|) {
-		push @paths, { hash => $1, path => $2 };
+	my ($self, $pathSpec)= @_;
+	if ($pathSpec =~ m|^@([^/]+)(/.*)$|) {
+		push @{$self->paths}, { date => $1, path => $2 };
+	} elsif ($pathSpec =~ m|^#([^/]+)(/.*)$|) {
+		push @{$self->paths}, { hash => $1, path => $2 };
 	} else {
-		push @paths, { hash => $ls{hash}, date => $ls{date}, path => "$_[0]" };
+		push @{$self->paths}, { hash => $self->hash, date => $self->date, path => "$pathSpec" };
 	}
 }
 
-GetOptions(
-	App::Casbak::CmdlineOptions(\%casbak),
-	'date=s'      => sub { $ls{date}= $_[1]; $ls{hash}= undef; },
-	'root=s'      => sub { $ls{hash}= $_[1]; $ls{date}= undef; },
-	'long|l'      => \$ls{long},
-	'a'           => \$ls{all},
-	'directory|d' => \$ls{directory},
-	'<>'          => \&add_path,
-) or pod2usage(2);
+sub applyArguments {
+	my ($self, @args)= @_;
+	
+	require Getopt::Long;
+	Getopt::Long::Configure(qw: no_ignore_case bundling permute :);
+	Getopt::Long::GetOptionsFromArray(\@args,
+		$self->_baseGetoptConfig,
+		'date=s'      => sub { $self->date($_[1]); $self->hash(undef); },
+		'root=s'      => sub { $self->hash($_[1]); $self->date(undef); },
+		'long|l'      => \$self->lsConfig->{long},
+		'a'           => \$self->lsConfig->{all},
+		'directory|d' => \$self->lsConfig->{directory},
+		'<>'          => sub { $self->add_path($_[0]) },
+		) or die "\n";
+	
+}
 
-push @paths, { path => '/' } unless @paths;
-App::Casbak->new(\%casbak)->ls(\%ls);
-exit 0;
+sub run {
+	my $self= shift;
+	push @{$self->paths}, { path => '/' }
+		unless @{$self->paths};
+	App::Casbak->new($self->casbakConfig)->ls($self->lsConfig);
+}
 
+sub getHelpPOD {
+	open(my $f, '<', __FILE__)
+		or die "Unable to read script (".__FILE__.") to extract help text: $!\n";
+	local $/= undef;
+	<$f>;
+}
+
+1;
 
 __END__
 =head1 NAME
 
-casbak-ls - List files in a backup, roughly as the ls command would
+casbak ls - List files in a backup, roughly as the ls command would
 
 =head1 SYNOPSIS
 
-casbak-ls [options] PATH
+casbak ls [options] PATH [ [options] PATH ... ]
 
 =head1 OPTIONS
 
@@ -65,6 +95,7 @@ unix epoch number, or a relative notation like used by rdiff-backup, where
 months ago, and #Y is a number of years ago.
 
 Example:
+
   1Y            1 year ago
   5W            5 weeks ago
   13D           13 days ago
@@ -91,9 +122,15 @@ hex digits to refer to a distinct directory, rather than the full hash.
 The selected root remains in effect for all paths that follow it, unless
 changed with another '--root' option.
 
+Note that you *can* specify a hash of a non-root directory, and this will
+give you a chroot-like effect on any symlinks you encounter, which may
+not be what you want.
+
 As a shorthand, you can specify a root for a specific file as
 
   "#HASH_PREFIX/PATH"
+
+but you might need to quote it so your shell doesn't turn it into a comment.
 
 =item -l
 
@@ -101,7 +138,7 @@ As a shorthand, you can specify a root for a specific file as
 
 Print a long listing.  That is, with all known metadata for the directory
 entries.  This is much like "ls -l" except the metadata fields depend on
-what was stored.
+what was recorded.
 
 =item -a
 
@@ -112,7 +149,8 @@ people in the habit of "ls -la" don't get an error message.
 
 =item --directory
 
-list directories and symlinks as entries, instead of their contents.
+list directories and symlinks as single entries, instead of listing their
+contents.
 
 =back
   

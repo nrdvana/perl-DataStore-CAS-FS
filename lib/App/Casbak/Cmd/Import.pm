@@ -1,37 +1,75 @@
-#! /usr/bin/env perl
-
+package App::Casbak::Cmd::Import;
 use strict;
 use warnings;
+use Try::Tiny;
 
-use Getopt::Long 2.24 qw(:config no_ignore_case bundling permute);
-use Pod::Usage;
-use App::Casbak;
+use parent 'App::Casbak::Cmd';
 
-my %casbak;
-my @paths;
-my %import= ( paths => \@paths );
+sub ShortDescription {
+	"Import files from filesystem to virtual path in backup"
+}
+
+sub paths { $_[0]{paths} }
+sub path_list { @{$_[0]->paths} }
+sub compareMetaOnly { $_[0]{compareMetaOnly} }
+
+sub _ctor {
+	my ($class, $params)= @_;
+	$params->{paths} ||= [];
+	$class->SUPER::_ctor($params);
+}
+
+sub applyArguments {
+	my ($self, @args)= @_;
+	
+	require Getopt::Long;
+	Getopt::Long::Configure(qw: no_ignore_case bundling permute :);
+	Getopt::Long::GetOptionsFromArray(\@args,
+		$self->_baseGetoptConfig,
+		'quick'   => \$self->{compareMetaOnly},
+		'<>'      => sub { $self->add_path("$_[1]") },
+		'as=s'    => sub { $self->set_virtual_path("$_[1]") },
+		) or die "\n";
+	
+}
 
 sub add_path {
-	my $arg= ''.shift;
-	push @paths, { real => $arg, virt => $arg };
+	my ($self, $path)= @_;
+	push @{$self->paths}, { real => $path, virt => $path };
 }
+
 sub set_virtual_path {
-	pod2usage("No preceeding path for '--as'") unless scalar @paths;
-	$paths[-1]{virt}= $_[1];
+	my ($self, $virt)= @_;
+	die "No preceeding path for '--as'\n"
+		unless scalar @{$self->paths};
+	$self->paths->[-1]{virt}= $virt;
 }
 
-GetOptions(
-	App::Casbak::CmdlineOptions(\%casbak),
-	'quick'   => \$import{quick},
-	'<>'      => \&add_path,
-	'as=s'    => \&set_virtual_path,
-) or pod2usage(2);
+sub run {
+	my $self= shift;
+	
+	unless scalar($self->path_list) {
+		my $msg= "No paths specified.  Nothing to do\n";
+		$self->allowNoop or die $msg;
+		warn $msg;
+		return 1;
+	}
+	
+	# Create instance of Casbak
+	my $casbak= App::Casbak->new($self->casbakConfig);
+	
+	# Start from current snapshot.
+	# Note that $root is a checksum string and not an object, here.
+	# It will get inflated to an object during 'importTree'
+	my $snap= $casbak->getSnapshot();
 
-scalar(@paths)
-	or pod2usage("No paths specified");
-
-App::Casbak->new(\%casbak)->importFile(\%import);
-exit 0;
+	for my $pathSpec ($self->path_list) {
+		$root= $casbak->importTree(snapshot => $snap, %$pathSpec, compareMetaOnly => $self->compareMetaOnly);
+	}
+	
+	# 
+	$casbak->saveSnapshot($root);
+}
 
 __END__
 

@@ -5,8 +5,35 @@ use File::CAS;
 use File::Spec;
 use Carp;
 use Try::Tiny;
+use YAML::XS ();
 
-require App::Casbak::ImportFile;
+=head1 NAME
+
+Casbak - backup utility built around File::CAS storage library
+
+=head1 LOGGING
+
+Casbak defines class methods for logging purposes.
+They are called as
+
+  App::Casbak::Error(@things)
+
+where @things can contain objects with auto-stringification.
+*However* in the methods Debug() and Trace() objects will be dumped
+with Data::Dumper regardless of whether they supply stringification.
+
+No stringification occurs at all unless the log level has enabled
+the function.
+
+Functions are Error, Warn, Note, Into, Debug, Trace, and the default
+level is to display Note and above.
+
+Call App::Casbak->SetLogLevel($integer) to set the log level.
+
+(at some point in the future, these will be directable to custom
+ user defined logging modules, and SetLogLevel will be ignored)
+
+=cut
 
 our $LogLevel= 0;
 sub SetLogLevel { (undef, $LogLevel)= @_; }
@@ -29,88 +56,7 @@ sub VersionMessage {
 	."File::CAS version: ".join('.',File::CAS::VersionParts())."\n";
 }
 
-sub ParseOptions {
-	my ($class, $argList)= @_;
-	my %opts= (
-		verbosity   => 0,
-		backupDir   => '.',
-		wantHelp    => 0,
-		wantVersion => 0,
-	);
-	
-	require Getopt::Long;
-	my $save= Getopt::Long::Configure(qw: no_ignore_case bundling require_order :);
-	Getopt::Long::GetOptionsFromArray($argList,
-		'version|V'      => \$opts{wantVersion},
-		'help|?'         => \$opts{wantHelp},
-		'verbose|v'      => sub { ++$opts{verbosity} },
-		'quiet|q'        => sub { --$opts{verbosity} },
-		'casbak-dir|D=s' => \$opts{backupDir},
-	)
-	or return undef;
-	Getopt::Long::Configure($save);
-	\%opts;
-}
-
-# Load a package for a casbak command (like 'ls', 'init', etc)
-# Returns true on success, false on nonexistent, and throws
-# an exception if the package exists but fails to load.
-sub LoadSubcommand {
-	my ($class, $cmdName)= @_;
-	my $pkg= 'App::Casbak::Cmd::'.uc(substr($cmdName,0,1)).lc(substr($cmdName,1));
-	try {
-		LoadModule($pkg);
-		1;
-	}
-	catch {
-		# Try to distinguish between module errors and nonexistent modules.
-		my $commands= $class->FindAllCommands();
-		for (@$commands) {
-			if ($_ eq $pkg) {
-				# looks like a bug in the package.
-				die "$_";
-			}
-		}
-		0;
-	};
-}
-
-sub FindAllCommands {
-	my ($class)= @_;
-	my %pkgSet= ();
-	# Search all include paths for packages named "App::Casbak::Cmd::*"
-	for (@INC) {
-		my $path= File::Spec->catdir($_, 'App', 'Casbak', 'Cmd');
-		if (opendir(my $dh, $path)) {
-			$pkgSet{"App::Casbak::Cmd::".substr($_,0,-3)}= 1
-				for grep { $_ =~ /[.]pm$/ } readdir($dh);
-		}
-	}
-	[ keys %pkgSet ]
-}
-
-# First param is THIS CLASS (it is a class method)
-# Second param is the package name you want to load.
-# Throws an exception on failure.
-sub LoadModule {
-	my ($class, $module, $version)= @_;
-	Trace("Loading module", $module, version => $version);
-
-	($module =~ /^[A-Za-z0-9_:]+$/)
-		or carp "Invalid perl package name: '$module'\n";
-
-	if (defined $version) {
-		($version =~ /^[^ ]*$/)
-			or carp "Invalid version string: '$version'\n";
-		$version= ' '.$version;
-	}
-	else { $version= ''; }
-	
-	local $@;
-	if (!eval "require $module$version;") {
-		die "$@";
-	}
-}
+*_requireClass= *File::CAS::_requireClass;
 
 sub backupDir { $_[0]{backupDir} }
 sub cfgFile   { File::Spec->catfile($_[0]->backupDir, 'casbak.conf.yml') }
@@ -162,7 +108,7 @@ sub getSnapshotOrDie {
 		or die defined $date? "No snapshot existed on date $date\n" : "No snapshots recorded yet\n";
 }
 	
-sub addSnapshot {
+sub saveSnapshot {
 	my ($self, $date, $hash)= @_;
 	push @{$self->snapshots}, [ $self->canonicalDate($date), $hash ];
 	my $tmpFile= $self->rootsFile.'.tmp';
@@ -332,5 +278,93 @@ sub init {
 	open($fd, ">", $self->rootsFile) && close($fd)
 		or die "Error writing snapshots file: $!\n";
 }
+
+sub importTree {
+	my ($self, %p)= @_;
+	Trace('Casbak->importTree(): ', \%p);
+	
+	my ($srcPath, $dstPath, $rootEnt)= ($p{real}, $p{virt}, $p{root});
+
+	# The Root Dir::Entry defaults to the latest snapshot
+	$rootEnt= $self->getSnapshot()
+		unless defined $rootEnt;
+	
+	# If we're starting from *nothing*, we fake the root Dir::Entry by
+	#   supplying the known hash of the canonical "Empty Directory"
+	$rootEnt= $self->cas->getEmptyDirHash()
+		unless defined $rootEnt;
+	
+	# Did they give is a proper DirEnt, or just a hash?
+	if (!ref $rootEnt) {
+		# They gave us a hash.  Convert to Dir::Entry.
+		$rootEnt= File::CAS::Dir::Entry->new( name => '', type => 'dir', hash => $rootEnt );
+	}
+	else {
+		ref($rootEnt)->isa('File::CAS::Dir::Entry')
+			or croak "Invalid 'root': must be File::CAS::Dir::Entry or digest string";
+		$rootEnt->type eq 'dir'
+			or croak "Root directory entry must describe a directory.";
+	}
+	
+	# Now get an array of Dir::Entry describing the entire destination path.
+	# Any missing directories will create generic/empty Dir::Entry objects.
+	my $err;
+	my $resolvedDest= $self->cas->resolvePathPartial($rootEnt, $dstPath, \$err);
+	
+	# We always allow the final path element to be created/overwritten, but we only
+	# allow inbetween directories to be created if the user requested that feature.
+	if (@$resolvedDest > 1 and !defined $resolvedDest->[-2]->hash) {
+		$p{create_deep}
+			or croak "Destination path does not exist in backup: '$dstPath' ($err)";
+	}
+
+	# Now inspect the source entry in the real filesystem
+	my $srcEnt= $self->cas->scanner->scanDirEnt($srcPath)
+		or die "Cannot stat '$srcPath'\n";
+	# Its probably a dir, but we also allow importing single files.
+	if ($srcEnt->{type} eq 'dir') {
+		my $hintDir;
+		if (defined $resolvedDest->[-1]) {
+			croak "Attempt to overwrite file with directory"
+				if (defined $resolvedDest->[-1]->type and $resolvedDest->[-1]->type ne 'dir');
+			$hintDir= $self->cas->getDir($resolvedDest->[-1]->hash)
+				if (defined $resolvedDest->[-1]->hash);
+		}
+		my $hash= $self->cas->putDir($srcPath, $hintDir);
+		
+		# When building the new dir entry, keep all source attrs except name,
+		#   but use destination entry attrs as defaults for attrs not set in $srcEnt
+		# Example:
+		#  $srcEnt = { name => 'foo', create_ts => 12345 };
+		#  $dstEnt = { name => 'bar', create_ts => 11111, unix_uid => 1002 };
+		#  $result = { name => 'bar', create_ts => 12345, unix_uid => 1002 };
+		my %attrs= %{$srcEnt->asHash};
+		delete $attrs{name};
+		%attrs= %{$dstEnt->asHash}, %attrs;
+		$resolvedDest->[-1]= File::CAS::Dir::Entry->new(%attrs);
+	}
+	else {
+		# We do not allow the root entry to be anything other than a directory.
+		(@$resolvedDest > 1)
+			or croak "Cannot store non-directory (type = ".$srcEnt->type.") as virtual root: '$srcPath'\n";
+		my $hash= $self->cas->putFile($srcPath);
+		$resolvedDest->[-1]= File::CAS::Dir::Entry->new( %{$srcEnt->asHash}, hash => $hash );
+	}
+	
+	# The final Dir::Entry in the list $resolvedDest has been modified.
+	# If it was not the root, then we need to walk up the tree modifying each directory.
+	while (@$resolvedDest > 1) {
+		my $newEnt= pop @$resolvedDest;
+		my $dirEnt= $resolvedDest->[-1];
+		my $dir= $self->cas->getDir($dirEnt->hash);
+		$dir= $self->cas->mergeDir($dir, [ $newEnt ] );
+		my $hash= $self->cas->putDir($dir);
+		$resolvedDest->[-1]= File::CAS::Dir::Entry->new( %{$dirEnt->asHash}, hash => $hash );
+	}
+	
+	# Return the new root Dir::Entry (caller will likely save this as a snapshot)
+	return $resolvedDest[0];
+}
+
 
 1;

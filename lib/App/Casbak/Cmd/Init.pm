@@ -1,82 +1,110 @@
-#! /usr/bin/env perl
-
+package App::Casbak::Cmd::Init;
 use strict;
 use warnings;
-
-use Getopt::Long 2.24 qw(:config no_ignore_case bundling permute);
-use Pod::Usage;
-use App::Casbak;
 use Try::Tiny;
 
-my %casbak;
-my %init= ( cas => { store => { CLASS => 'File::CAS::Store::Simple' } } );
+use parent 'App::Casbak::Cmd';
 
-GetOptions(
-	App::Casbak::CmdlineOptions(\%casbak),
-	'store|s=s'     => \&parseStore,
-	'dirtype|d=s'   => \&parseDirtype,
-	'digest=s'      => \&parseDigest,
-) or pod2usage(2);
-
-for my $arg (@ARGV) {
-	($arg =~ /^([A-Za-z_][A-Za-z0-9_.]*)=(.*)/)
-		or pod2usage("Invalid name=value pair: '$arg'\n");
-	
-	apply(\%init, [split /\./, $1], $2, 0 );
+sub ShortDescription {
+	"Initialize a new backup directory"
 }
 
-defined $init{cas}{store} and length $init{cas}{store}
-	or pod2usage("Parameter 'cas.store' is required\n");
+sub _ctor {
+	my ($class, $params)= @_;
 
-App::Casbak->init({%casbak, %init});
-exit 0;
+	$params->{casbakConfig} ||= {};
+	$params->{casbakConfig}{cas} ||= {};
+	$params->{casbakConfig}{cas}{store} ||= { CLASS => 'File::CAS::Store::Simple' };
+
+	$class->SUPER::_ctor($params);
+}
+
+sub run {
+	my $self= shift;
+	App::Casbak->init($self->casbakConfig);
+}
+
+sub applyArguments {
+	my ($self, @args)= @_;
+	
+	require Getopt::Long;
+	Getopt::Long::Configure(qw: no_ignore_case bundling permute :);
+	Getopt::Long::GetOptionsFromArray(\@args,
+		$self->_baseGetoptConfig,
+		'store|s=s'     => sub { $self->parseStore($_[1]) },
+		'dirtype|d=s'   => sub { $self->parseDirtype($_[1]) },
+		'digest=s'      => sub { $self->parseDigest($_[1]) },
+		) or die "\n";
+
+	for my $arg (@args) {
+		($arg =~ /^([A-Za-z_][A-Za-z0-9_.]*)=(.*)/)
+			or die "Invalid name=value pair: '$arg'\n";
+		
+		$self->apply($1, $2);
+	}
+
+	defined $self->casbakConfig->{cas}{store} and length $self->casbakConfig->{cas}{store}
+		or die "Parameter 'cas.store' is required\n";
+}
 
 sub apply {
-	my ($hash, $path, $value, $i)= @_;
-	my $field= $path->[$i];
-	if ($i < $#$path) {
-		$hash->{$field} ||= {};
-		if (!ref $hash->{$field}) {
-			warn "using implied ".join('.', @$path[0..$i]).".CLASS = $value\n";
-			$hash->{$field}= { CLASS => $hash->{$field} };
+	my ($self, $path, $value)= @_;
+	$path= [ split /\./, $path ] unless ref $path;
+	
+	my $node= $self->casbakConfig;
+	for (my $i= 0; $i < $#$path; $i++) {
+		my $field= $path->[$i];
+		$node->{$field} ||= {};
+		if (!ref $node->{$field}) {
+			warn "using implied ".join('.', @$path[0..$i]).".CLASS = ".$node->{$field}."\n";
+			$node->{$field}= { CLASS => $node->{$field} };
 		}
-		apply($hash->{$field}, $path, $value, $i+1);
-	} else {
-		warn "Multiple values specified for ".join('.', @$path).".  Using '$value'.\n"
-			if defined $hash->{$field};
-		$hash->{$field}= $value;
+		$node= $node->{$field};
 	}
+	warn "Multiple values specified for ".join('.', @$path).".  Using '$value'.\n"
+		if defined $node->{$path->[-1]};
+	$node->{$path->[-1]}= $value;
 }
 
 sub parseStore {
-	my ($opt, $spec)= @_;
-	if ($spec =~ /simple/i) {
-		$init{cas}{store}{CLASS}= 'File::CAS::Store::Simple';
-	} else {
-		pod2usage("Invalid store spec '$spec'");
-	}
+	my ($self, $spec)= @_;
+	my %opts= (
+		simple => 'File::CAS::Store::Simple',
+	);
+	
+	my $pick= $opts{lc $spec}
+		or die "Invalid store spec '$spec'\n";
+	
+	$self->apply('cas.store.CLASS' => $pick);
 }
 
 sub parseDirtype {
-	my ($opt, $spec)= @_;
-	if ($spec =~ /universal/i) {
-		$init{cas}{scanner}{dirClass}= 'File::CAS::Dir';
-	} elsif ($spec =~ /minimal/i) {
-		$init{cas}{scanner}{dirClass}= 'File::CAS::Dir::Minimal';
-	} elsif ($spec =~ /unix/i) {
-		$init{cas}{scanner}{dirClass}= 'File::CAS::Dir::Unix';
-	} else {
-		pod2usage("Invalid dirtype spec '$spec'");
-	}
+	my ($self, $spec)= @_;
+	my %opts= (
+		universal => 'File::CAS::Dir',
+		minimal   => 'File::CAS::Dir::Minimal',
+		unix      => 'File::CAS::Dir::Unix',
+	);
+	
+	my $pick= $opts{lc $spec}
+		or die "Invalid dirtype spec '$spec'\n";
+	
+	$self->apply('cas.scanner.dirClass' => $pick);
 }
 
 sub parseDigest {
-	my ($opt, $digest)= @_;
-	require Digest;
-	try { Digest->new($digest) }
-	catch { die "Digest algorithm '$digest' is not available on this system.\n"; };
-	$init{cas}{store}{digest}= $digest;
+	my ($self, $digest)= @_;
+	$self->apply('cas.store.digest' => $digest);
 }
+
+sub getHelpPOD {
+	open(my $f, '<', __FILE__)
+		or die "Unable to read script (".__FILE__.") to extract help text: $!\n";
+	local $/= undef;
+	<$f>;
+}
+
+1;
 
 __END__
 =head1 NAME
@@ -85,7 +113,7 @@ casbak-init - initialize a casbak backup directory
 
 =head1 SYNOPSIS
 
-casbak-init [options] [-s STORE_CLASS] [-d DIR_CLASS] [name=value ...]
+casbak [options] init [-s STORE_CLASS] [-d DIR_CLASS] [name=value ...]
 
 STORE_CLASS is one of: 'Simple'
 
