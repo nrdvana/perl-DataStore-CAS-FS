@@ -1,4 +1,4 @@
-#!perl
+#! /usr/bin/env perl
 use strict;
 use warnings;
 
@@ -35,7 +35,7 @@ is($sto->closeFile($empty), 1);
 # see if the self-check works
 ok($sto->validate($empty->{hash}), 'validate');
 
-#write a longer string
+# write a longer string
 my $info;
 my $str= "A string of text!\nAnd another line of text.\n";
 my $hash= $sto->calcHash($str);
@@ -52,14 +52,7 @@ is($sto->readFile($info, $buffer, 1024), 0, 'correct eof');
 ok($sto->validate($info->{hash}), 'validate');
 
 # now create a new store on the same path
-my $sto2= new_ok('File::CAS::Store::Simple', [ path => './cas_tmp/cas_store_simple', digest => 'auto' ]);
+my $sto2= new_ok('File::CAS::Store::Simple', [ path => './cas_tmp/cas_store_simple' ]);
 is($sto2->get($hash)->{size}, length($str), 'found same string');
-
-# now create a new store with the wrong algorithm.  Should die...
-like(
-	(try { File::CAS::Store::Simple->new(path => './cas_tmp/cas_store_simple', digest => 'sha512'); 'success'; } catch { $_; }),
-	qr/algorithm mismatch/,
-	'algorithm check in constructor'
-);
 
 done_testing;

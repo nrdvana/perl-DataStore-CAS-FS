@@ -35,25 +35,23 @@ our $VERSION = '0.01';
 	my $buf;
 	my $file= $sto->get($hash);
 	
-	# This breaks the file's read/write methods, but this
-	#  bypasses the buffering of the File object for a tiny
-	#  speed boost.  It uses sysread, which also bypasses
-	#  Perls's buffering.
+	# This breaks the file object's read/write methods, but
+	#  this bypasses the buffering of the File object for a
+	#  tiny speed boost.  It uses sysread, which also
+	#  bypasses Perls's buffering.
 	$got= $sto->readFile($file, $buf, 1024);
 	
 =cut
 
 use Carp;
-use File::Spec::Functions 'catfile', 'catdir';
+use Try::Tiny;
+use IO::File;
+use Digest;
 use Cwd ();
+use File::Spec::Functions 'catfile', 'catdir';
 use File::Copy;
 use File::Temp 'tempfile';
 use File::Path 'make_path';
-use Digest::SHA;
-use IO::File;
-use YAML ();
-use Try::Tiny;
-use Params::Validate ();
 use File::CAS::File;
 
 =head1 ATTRIBUTES
@@ -61,19 +59,21 @@ use File::CAS::File;
 =head2 path
 
 Read-only.  The filesystem path where the store is rooted.
-(the root of the store will always have a file named 'file_cas_store_simple.yml'
-and will contain a hash entry for the empty string.)
+
+The root of the store will always have a file named 'file_cas_store_simple.yml'
+and will contain a hash entry for the empty string, and a bunch of directories
+for each hash prefix: '00' .. 'FF'.
 
 =head2 copyBufferSize
 
 Number of bytes to copy at a time when saving data from a filehandle to the
-CAS.
+CAS.  This is a performance hint, and the default is usually fine.
 
 =head2 digest
 
 Read-only.  Algorithm used to calculate the hash values.  Default is 'sha256'.
-Valid values are anything that Digest::SHA accepts, though this could be
-extended in the future.
+Valid values are anything that perl's Digest module accepts, though this could
+be extended in the future.
 
 This value cannot be changed on the fly; custom values must be passed to the
 constructor.
@@ -88,7 +88,7 @@ Read-only.  This is a simple cache of the hash value that the chosen hash
 algorithm gives for an empty string.  You can compare a hash to this value to
 find out whether it references an empty file.
 
-=head2 _infoFile
+=head2 _metaFile
 
 Intended mainly for internal use, this is the filename of the store's metadata
 file, most likely encoded as YAML.
@@ -96,77 +96,186 @@ file, most likely encoded as YAML.
 =cut
 
 sub path           { $_[0]{path} }
-sub pathBase       { $_[0]{pathBase} }
-sub copyBufferSize { $_[0]{copyBufferSize}= $_[1] if (@_ > 1); $_[0]{copyBufferSize} || 256*1024 }
+sub pathReal       { $_[0]{pathReal} }
 sub digest         { $_[0]{digest} }
-sub hashOfNull     { $_[0]{hashOfNull} }
-sub _metaFile      { $_[0]{_infoFile} ||= catfile($_[0]->pathReal, 'file_cas_store_simple.yml'); }
 
-sub pathReal {
-	my $self= shift;
-	$self->{pathReal} ||= Cwd::realpath(File::Spec->rel2abs( $self->path, $self->pathBase));
-}
+sub copyBufferSize { $_[0]{copyBufferSize}= $_[1] if (@_ > 1); $_[0]{copyBufferSize} || 256*1024 }
+sub hashOfNull     { $_[0]{hashOfNull} }
 
 =head1 METHODS
 
+=head2 new( \%params | %params )
+
+Constructor.  It will load (and possibly create) a CAS Store.
+
+'path' points to the cas directory.  Trailing slashes don't matter.
+If 'path' is relative, it will be resolved during the constructor to an
+absolute real path.  (the 'path' attribute remains the same, in case you
+want to reference it later, but it cannot be changed)  The 'pathReal'
+attribute shows the resolved path.
+
+'pathBase' overrides the "current directory" for resolving a relative 'path'.
+We want to support relative paths, but the current directory is essentially
+a global variable, which can be inconvenient.
+(While we could require the user to resolve relative paths first, and keep
+that detail out of this module, they might later want to know whether this
+object was initialized from a relative or absolute path, so we allow it.)
+
+'copyBufferSize' initializes the respective attribute.
+
+'digest' gets loaded from the store's configuration, and may not be passed to
+the constrctor.  For creating a new store with a specific digest, specify
+'defaultDigest'.
+
+If 'create' is specified, and 'path' refers to an empty directory, a fresh store
+will be initialized.
+
+'ignoreVersion' allows you to load a Store even if it was created with a newer
+version of the Store::Simple package that you are now using.  (or a different
+package entirely)
+
+To dynamically find out which parameters the constructor accepts,
+call $class->_ctor_params(), which returns a list of valid keys.
+
 =cut
 
-our @_ctor_params= qw: path copyBufferSize digest create ignoreVersion pathBase :;
+# We inherit 'new', and implement '_ctor'.  The parameters to _ctor are always a hash.
+
+our @_ctor_params= qw: path copyBufferSize create ignoreVersion pathBase defaultDigest :;
 sub _ctor_params { @_ctor_params; }
 sub _ctor {
 	my ($class, $params)= @_;
 	my %p= map { $_ => delete $params->{$_} } @_ctor_params;
+	
+	# Check for invalid params
 	croak "Invalid parameter: ".join(', ', keys %$params)
 		if (keys %$params);
 	
+	# extract constructor flags which don't belong in attributes
 	my $create= delete $p{create};
 	my $ignoreVersion= delete $p{ignoreVersion};
-	defined $p{path} or $p{path}= '.';
-	$p{digest} ||= 'auto';
-	my $self= bless \%p, $class;
+	my $pathBase= delete $p{pathBase};
+	my $defaultDigest= delete $p{defaultDigest} || 'SHA-1';
 	
-	unless (-f $self->_metaFile) {
-		croak "Path does not appear to be a CAS: '$self->{path}'"
+	# Calculate the absolute real path
+	defined $p{path} or $p{path}= '.';
+	defined $pathBase or $pathBase= Cwd::getcwd();
+	$p{pathReal}= Cwd::realpath( File::Spec->rel2abs( $p{path}, $pathBase ) );
+	
+	# Check directory
+	unless (-f catfile($p{pathReal}, 'conf', 'VERSION')
+		and -f catfile($p{pathReal}, 'conf', 'DIGEST') )
+	{
+		croak "Path does not appear to be a valid CAS : '$p{pathReal}'"
 			unless $create;
-		$self->{digest}= 'sha1' if $self->digest eq 'auto';
-		$self->initializeStore();
+		
+		# Here, we are creating a new CAS directory
+		
+		my $self= bless { %p, digest => $defaultDigest }, $class;
+		$self->_initializeStore();
+		
+		# We could just use that '$self', but we want to double-check our initialization
+		#  by continuing through the regular constructor code path.
 	}
 	
-	my ($storeSettings)= YAML::LoadFile($self->_metaFile)
-		or croak "Error reading store attributes from '".$self->_metaFile."'";
+	my $self= bless \%p, $class;
 	
-	$self->{digest}= $storeSettings->{digest}
-		if !defined $self->digest or $self->digest eq 'auto';
+	$self->_loadDigest();
+
+	try {
+		$self->_checkVersion();
+	}
+	catch {
+		$ignoreVersion ? warn($_) : die($_);
+	};
+	
+	# Properly initialized CAS will always contain an entry for the empty string
 	$self->{hashOfNull}= $self->_newHash->hexdigest();
-	
-	# Sanity checks
-	croak "Digest algorithm mismatch: $storeSettings->{digest} != $self->{digest}"
-		unless $storeSettings->{digest} eq $self->digest;
-	croak "Store was created by a newer version of this module.  Pass 'ignoreVersion=>1' if you want to try anyway."
-		unless $ignoreVersion or $storeSettings->{VERSION} <= $VERSION;
-	croak "Store is missing a required entry (indicating a possibly corrupt tree)"
+	croak "CAS dir '".$self->pathReal."' is missing a required file (has it been initialized?)"
 		unless $self->get($self->hashOfNull);
 	
 	return $self;
 }
+
+# Called during constrctor when creating a new Store directory.
+sub _initializeStore {
+	my ($self)= @_;
+	make_path(catdir($self->pathReal, 'conf'));
+	$self->_writeConfig('VERSION', ref($self).' '.$VERSION."\n");
+	$self->_writeConfig('DIGEST', $self->digest."\n");
+	$self->put('');
+}
+
+# In the name of being "Simple", I decided to just read and write
+# raw files for each parameter instead of using JSON or YAML.
+# It is not expected that this module will have very many options.
+# Subclasses will likely use YAML.
+
+sub _writeConfig {
+	my ($self, $fname, $content)= @_;
+	my $path= catfile($self->pathReal, 'conf', $fname);
+	my $f= IO::File->new($path, '>')
+		or die "Failed to open '$path' for writing: $!\n";
+	$f->print($content) && $f->close()
+		or die "Failed while writing '$path': $!\n";
+}
+sub _readConfig {
+	my ($self, $fname)= @_;
+	my $path= catfile($self->pathReal, 'conf', $fname);
+	open(my $f, '<', $path)
+		or die "Failed to read '$path' : $!\n";
+	local $/= undef;
+	return <$f>;
+}
+
+# This method loads the digest configuration and validates it
+# It is called during the constructor.
+sub _loadDigest {
+	my $self= shift;
+	
+	# Get the digest algorithm name
+	chomp( $self->{digest}= $self->_readConfig('DIGEST') );
+	
+	# Check for digest algorithm availability
+	my $found= ( try { $self->_newHash; 1; } catch { 0; } )
+		or die "Digest algorithm '".$self->digest."' is not available on this system.\n";
+}
+
+# This method loads the version the store was initialized with
+#  and checks to see if we are compatible with it.
+sub _checkVersion {
+	my $self= shift;
+
+	# Version str is "$PACKAGE $VERSION\n", where version is a number but might have a string suffix on it
+	my $version_str= $self->_readConfig('VERSION');
+	($version_str =~ /^([A-Za-z0-9:_]+) ([0-9.]+)/)
+		or die "Invalid version string in storage dir '".$self->pathReal."'\n";
+
+	# Check $PACKAGE
+	($1 eq ref($self))
+		or die "Class mismatch: storage dir was created with $1 but you're trying to access it with ".ref($self)."\n";
+
+	# Check $VERSION
+	($2 > 0 and $2 <= $VERSION)
+		or die "Storage dir '".$self->pathReal."' was created by version $2 of ".ref($self).", but this is only $VERSION\n";
+}
+
+=head2 getConfig
+
+This method returns a hash which can be used as the 'cas' parameter to
+File::CAS's constructor to re-create this object.
+
+=cut
 
 sub getConfig {
 	my $self= shift;
 	return {
 		CLASS => ref $self,
 		VERSION => $VERSION,
-		# we don't store pathBase or pathReal, so that path can remain relative.
+		digest => $self->digest,
 		path => $self->path,
 		(defined $self->{copyBufferSize}? ( copyBufferSize => $self->copybufferSize ) : ()),
-		digest => $self->digest,
 	};
-}
-
-sub initializeStore {
-	my ($self)= @_;
-	make_path($self->pathReal);
-	YAML::DumpFile($self->_metaFile, $self->getConfig);
-	$self->put('');
 }
 
 =head2 get
@@ -307,28 +416,6 @@ sub validate {
 	}
 }
 
-=head2 sweep( $setOfHashes, $confirmProc )
-
-Remove all hashes which are not in the given set.  
-
-This is a dangerous operation, and you should make sure you have all the
-hashes you want to keep listed in the set.
-
-If $confirmProc is given, it will be passed the name of every hash which
-is about to be deleted.  If it returns true, the entity will indeed be
-removed.  If it returns false, nothing happens and the algorithm continues.
-If it returns undef, the algorithm is ended.
-
-$confirmProc provides a good way to list all the deleted entities, or to
-perform a "dry run" of the sweep.
-
-=cut
-sub sweep {
-	my ($self, $setOfHashes, $confirmProc)= @_;
-	# TODO:
-	croak "Unimplemented";
-}
-
 =head2 readFile( $lookupInfo, $buffer, $length [, $offset] )
 
 Same API, symantics, and caveats as read, with the exception
@@ -399,7 +486,7 @@ sub _writeAllOrDie {
 }
 
 sub _newHash {
-	Digest::SHA->new($_[0]{digest});
+	Digest->new($_[0]{digest});
 }
 
 sub _pathForHash {
