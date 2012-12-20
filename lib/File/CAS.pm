@@ -199,6 +199,20 @@ sub getDir {
 	$ret;
 }
 
+sub getEmptyDirHash {
+	my $self= shift;
+	return $self->{emptyDirHash} ||=
+		do {
+			my $emptyDir= File::CAS::Dir->SerializeEntries([],{});
+			$self->{store}->put($emptyDir);
+		};
+}
+
+sub getEmptyFileHash {
+	my $self= shift;
+	return $self->{store}->hashOfNull;
+}
+
 sub _clearDirCache {
 	my ($self)= @_;
 	$self->{_dircache}= {};
