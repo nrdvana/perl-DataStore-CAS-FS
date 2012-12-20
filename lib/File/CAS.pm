@@ -109,9 +109,7 @@ sub new {
 	if (ref $p{store} eq 'HASH') {
 		my %storeParams= %{$p{store}};
 		my $storeClass= delete $storeParams{CLASS} || 'File::CAS::Store::Simple';
-		$storeClass->can('new')
-			# eval "require $storeClass", but try not to use eval if we can avoid it...
-			or require File::Spec->catfile(split('::',$storeClass)).'.pm';
+		_requireClass($storeClass);
 		$storeClass->isa('File::CAS::Store')
 			or die "'$storeClass' is not a valid Store class\n";
 		$p{store}= $storeClass->new(\%storeParams);
@@ -122,15 +120,30 @@ sub new {
 	if (ref $p{scanner} eq 'HASH') {
 		my %scannerParams= %{$p{scanner}};
 		my $scannerClass= delete $scannerParams{CLASS} || 'File::CAS::Scanner';
-		$scannerClass->can('new')
-			# don't eval if we can avoid it...
-			or require File::Spec->catfile(split('::',$scannerClass)).'.pm';
+		_requireClass($scannerClass);
 		$scannerClass->isa('File::CAS::Scanner')
 			or die "'$scannerClass' is not a valid Scanner class\n";
 		$p{scanner}= $scannerClass->new(\%scannerParams);
 	}
 	
 	$class->_ctor(\%p);
+}
+
+sub _requireClass($) {
+	my $pkg= shift;
+	
+	# We're loading user-supplied class names.  Protect against code injection.
+	($pkg =~ /^[A-Za-z0-9_:]+$/)
+		or croak "Invalid perl package name: '$pkg'\n";
+	
+	unless ($pkg->can('new')) {
+		my ($fail, $err)= do {
+			local $@;
+			((not eval "require $pkg;"), $@);
+		};
+		die $err if $fail;
+	}
+	1;
 }
 
 sub getConfig {
@@ -344,14 +357,6 @@ sub _resolvePath {
 		}
 	}
 	\@dirEnts;
-}
-
-sub calcHashFile {
-	
-}
-
-sub sweep {
-	$_[0]{store}->sweep($_[1]);
 }
 
 =head1 AUTHOR
