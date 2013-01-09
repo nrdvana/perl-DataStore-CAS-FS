@@ -176,7 +176,7 @@ sub SerializeEntries {
 	my $json= $enc->encode($metadata || {});
 	my $ret= "CAS_Dir 0E File::CAS::Dir\n"
 		."{\"metadata\":$json,\n"
-		." \"entries\":[ \n";
+		." \"entries\":[\n";
 	$ret .= $enc->encode(ref $_ eq 'HASH'? $_ : $_->asHash).",\n"
 		for sort {(ref $a eq 'HASH'? $a->{name} : $a->name) cmp (ref $b eq 'HASH'? $b->{name} : $b->name)} @$entryList;
 	substr($ret, -2)= "\n]}\n";
