@@ -290,9 +290,14 @@ package File::CAS;
 
 =head2 getEmptyDirHash
 
-This returns the canonical value of an encoded empty directory. In other
-words, File::CAS::Dir->SerializeEntries([],{}).  This value is cached for
-performance.
+This returns the canonical key for an empty directory.  In other
+words, the return value of putScalar( File::CAS::Dir->SerializeEntries([],{}) ).
+This value is cached for performance.
+
+It is possible to encode empty directories with any plugin, so
+not all empty directories will have this key, but any time the
+library knows it is writing an empty directory, it will use this
+value instead of recalculating the hash of an empty dir.
 
 =cut
 
@@ -307,8 +312,9 @@ sub getEmptyDirHash {
 
 =head2 getEmptyFileHash
 
-This returns the value you get when storing an empty string.  This value
-is cached for performance.
+This returns the key for the empty string.
+In other words, the return value of putScalar('')
+This value is cached for performance.
 
 =cut
 
