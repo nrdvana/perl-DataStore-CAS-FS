@@ -534,7 +534,7 @@ sub _resolvePath {
 
 		# If no hash listed, directory was not stored. (i.e. --exclude option during import)
 		if (defined $ent->hash) {
-			$dir= $self->getDir($ent->{hash});
+			$dir= $self->getDir($ent->hash);
 			defined $dir
 				or return 'Failed to open directory "'.$ent->name.'"';
 		}
@@ -545,7 +545,6 @@ sub _resolvePath {
 
 		# Get the next path component, ignoring empty and '.'
 		my $name= shift @subPath;
-		my $ent;
 		next unless defined $name and length $name and ($name ne '.');
 
 		# We handle '..' procedurally, moving up one real directory and *not* backing out of a symlink.

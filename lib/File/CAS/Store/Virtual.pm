@@ -7,7 +7,7 @@ use Carp;
 use File::CAS::File;
 use Digest;
 
-our @_ctor_params= qw: path digest create ignoreVersion :;
+our @_ctor_params= qw: path digest create ignoreVersion entries :;
 sub _ctor_params { @_ctor_params; }
 
 sub _ctor {
