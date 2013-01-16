@@ -1,14 +1,17 @@
-#! /usr/bin/env perl
-
+package App::Casbak::Cmd::Export;
 use strict;
 use warnings;
+use Try::Tiny;
 
-use Getopt::Long 2.24 qw(:config no_ignore_case bundling permute);
-use Pod::Usage;
-use App::Casbak;
+use parent 'App::Casbak::Cmd';
 
-my %casbak;
-my %export;
+sub ShortDescription {
+	"Export files from backup to real filesystem"
+}
+
+1;
+
+=pod
 
 GetOptions(
 	App::Casbak::CmdlineOptions(\%casbak),

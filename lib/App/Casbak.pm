@@ -5,7 +5,7 @@ use File::CAS;
 use File::Spec;
 use Carp;
 use Try::Tiny;
-use YAML::XS ();
+use JSON ();
 
 =head1 NAME
 
@@ -58,87 +58,46 @@ sub VersionMessage {
 
 *_requireClass= *File::CAS::_requireClass;
 
+=head1 ATTRIBUTES
+
+
+
+=cut
+
 sub backupDir { $_[0]{backupDir} }
-sub cfgFile   { File::Spec->catfile($_[0]->backupDir, 'casbak.conf.yml') }
+sub cfgFile   { File::Spec->catfile($_[0]->backupDir, 'casbak.conf.json') }
 sub logFile   { File::Spec->catfile($_[0]->backupDir, 'casbak.log') }
-sub rootsFile { File::Spec->catfile($_[0]->backupDir, 'casbak.snapshots') }
-sub storeDefaultPath { File::Spec->catdir($_[0]->backupDir, 'store') }
+sub snapIndexFile { File::Spec->catfile($_[0]->backupDir, 'casbak.snapshots') }
+sub storeDefaultPath { $_[0]{storeDefaultPath} }
+sub cas { $_[0]{cas} }
 
-sub snapshots {
-	my $self= shift;
-	$self->{snapshots} ||= do {
-		open my $fh, "<", $self->rootsFile
-			or die "Failed to read '".$self->rootsFile."': $!\n";
-		my @entries;
-		while (<$fh>) {
-			my @fields= split /[\t\n]/;
-			scalar(@fields) >= 2
-				or die "Invalid entry in '".$self->rootsFile."': \"$_\"\n";
-			push @entries, \@fields;
-		}
-		\@entries;
-	};
-}
+=head1 METHODS
 
-sub getSnapshot {
-	my ($self, $targetDate)= @_;
-	my $array= $self->snapshots;
-	
-	return undef unless @$array;
-	
-	# if targetEpoch is undef, return the latest snapshot
-	return $array->[-1] unless defined $targetDate;
-	$targetDate= $self->canonicalDate($targetDate);
-	
-	my ($min, $max, $mid)= (-1, $#$array);
-	while ($min < $max) {
-		$mid= ($min+$max+1)>>1;
-		if ($targetDate ge $array->[$mid][0]) {
-			$min= $mid;
-		} else {
-			$max= $mid-1;
-		}
-	}
-	return $max < 0? undef : $array->[$min];
-}
+=head2 getConfig
 
-sub getSnapshotOrDie {
-	my ($self, $date)= @_;
-	$self->getSnapshot($date)
-		or die defined $date? "No snapshot existed on date $date\n" : "No snapshots recorded yet\n";
-}
-	
-sub saveSnapshot {
-	my ($self, $date, $hash)= @_;
-	push @{$self->snapshots}, [ $self->canonicalDate($date), $hash ];
-	my $tmpFile= $self->rootsFile.'.tmp';
-	try {
-		open my $fh, ">", $tmpFile
-			or die "Cannot write to '$tmpFile': $!\n";
-		for my $snap (@{$self->snapshots}) {
-			print $fh join("\t", @$snap)."\n";
-		}
-		close $fh
-			or die "Cannot save '$tmpFile': $!\n";
-		rename $tmpFile, $self->rootsFile
-			or die "Cannot replace '".$self->rootsFile."': $!\n";
-	}
-	catch {
-		die "$_\nThe entry that would have been written is: '$date $hash'\n";
-	};
-	1;
-}
+Returns a configuration hash that can be passed to 'new()' to re-create
+this instance of App::Casbak.
+
+=cut
 
 sub getConfig {
 	my $self= shift;
-	return {
+	my $cfg= {
 		CLASS => ref $self,
 		VERSION => $VERSION,
 		cas => $self->cas->getConfig,
+		backupDir => $self->backupDir,
 	};
+	
+	# One tweak- if the store has a path (which we try to always make absolute),
+	# we convert it to be relative to the casbak dir.
+	# The new() method reverses this to make it absolute again.
+	if (defined $cfg->{cas}{store}{path}) {
+		$cfg->{cas}{store}{path}= File::Spec->abs2rel($cfg->{cas}{store}{path}, $cfg->{backupDir});
+	}
+	
+	return $cfg;
 }
-
-sub cas { $_[0]{cas} }
 
 sub new {
 	my $class= shift;
@@ -153,37 +112,60 @@ sub new {
 	} else {
 		%p= @_;
 	}
-	
+
 	$p{backupDir}= '.' unless defined $p{backupDir};
 	if (!$p{cas}) {
-		require YAML;
-		my $cfgFile= File::Spec->catfile($p{backupDir}, 'casbak.conf.yml');
-		-f $cfgFile or die "Missing config file '$cfgFile'\n";
-		-r $cfgFile or die "Permission denied for '$cfgFile'\n";
-		my $cfg= YAML::LoadFile($cfgFile)
-			or die "Failed to load config file '$cfgFile'\n";
+		my $cfgFile= File::Spec->catfile($p{backupDir}, 'casbak.conf.json');
+		-f $cfgFile or croak "Missing config file '$cfgFile'\n";
+		-r $cfgFile or croak "Permission denied for '$cfgFile'\n";
+		my ($json, $cfg, $f);
+		try {
+			open($f, '<', $cfgFile)
+				and do { local $/= undef; $json= <$f> }
+				or die "$!\n";
+			$cfg= JSON->new->utf8->relaxed->decode($json);
+		}
+		catch {
+			my $err= "$_";
+			# Clean up JSON's error messages a bit...
+			if (defined($json) and ($err =~ /^(.*), at character offset (\d+)/)) {
+				my $lineNum= scalar split /\n/, substr($json, 0, $2).'x';
+				my $context= '"'.substr($json, $2, 10).'..."';
+				$err= "$1 at line $lineNum near $context\n";
+			}
+			# and now explain to the user what's going on
+			croak "Unable to load config file '$cfgFile': $err";
+		};
 		%p= (%$cfg, %p);
 	}
 	
 	# coersion from hash to object
 	if (ref $p{cas} eq 'HASH') {
-		my %cp= %{$p{cas}};
+		my %cp= %{$p{cas}}; # make a copy; we're going to modify it
+
+		# Determine whether to use File::CAS or a subclass.
 		my $cclass= (delete $cp{CLASS}) || 'File::CAS';
 		my $cclass_ver= delete $cp{VERSION};
-		DynLoad($cclass, $cclass_ver);
+		_requireClass($cclass, $cclass_ver);
 		$cclass->isa('File::CAS')
 			or die "'$cclass' is not a valid CAS class\n";
-		
+
+		# If the store is a configuration and not an object yet,
+		# we muck around with its parameters a bit.
 		if (ref $cp{store} eq 'HASH') {
-			DynLoad($cp{store}{CLASS}, delete $cp{store}{VERSION});
+			$cp{store}= { %{$cp{store}} }; # clone it
 			
-			my %validParams= map { $_ => 1 } $cp{store}{CLASS}->_ctor_params;
-			# We don't store the 'pathBase' in the configuration, so that path stays relative to backupDir
-			$cp{store}{pathBase}= $p{backupDir} if $validParams{pathBase};
+			# If the constructor has a 'path' parameter, we convert it from relative to
+			# absolute, because we want it to be relative to the ->backupDir and not
+			# to the current directory.
+			if (defined $cp{store}{path}) {
+				$cp{store}{path}= File::Spec->rel2abs($cp{store}{path}, $p{backupDir})
+					unless File::Spec->file_name_is_absolute($cp{store}{path});
+			}
 		}
-		
-		if (ref $cp{scanner} eq 'HASH') {
-			DynLoad($cp{scanner}{CLASS}, delete $cp{scanner}{VERSION});
+		elsif (ref $cp{store} and ref($cp{store})->can('path')) {
+			Warn("using a CAS storage engine with a path relative to the current dir (not the casbak dir)")
+				unless File::Spec->file_name_is_absolute($cp{store}{path})
 		}
 		
 		$p{cas}= $cclass->new(\%cp);
@@ -203,12 +185,38 @@ sub _ctor {
 	bless $params, $class;
 }
 
+=head2 dateParser
+
+Returns a cached instance of the parser we use in the event that
+we need to parse a date string.  This is lazy-built.
+
+=cut
+
 sub dateParser {
 	my $self= shift;
-	require DateTime;
-	require Date::Format::Natural;
-	$self->{dateParser} ||= DateTime::Format::Natural->new;
+	$self->{dateParser} ||= do {
+		require DateTime;
+		require Date::Format::Natural;
+		DateTime::Format::Natural->new;
+	};
 }
+
+=head2 canonicalDate( $date_thing )
+
+Takes a date in a variety of formats and returns a string
+in "YYYY-MM-DDTHH:MM:SSZ" format.
+
+  my $date= $self->canonicalDate( "2000-01-01Z" );
+  my $date= $self->canonicalDate( "25D" );
+  my $date= $self->canonicalDate( time() );
+  my $date= $self->canonicalDate( DateTime->new() );
+
+Allowed formats include canonical date strings or recognizable
+fractions of one, unix 'time()' integers, DateTime objects,
+or relative notations like "25D" (25 days ago), "2W" (2 weeks ago),
+"2Y" (2 years ago), or "3M" (3 months ago).
+
+=cut
 
 sub canonicalDate {
 	my ($self, $date)= @_;
@@ -216,8 +224,17 @@ sub canonicalDate {
 		# is it already in a valid format?
 		if ($date =~ /^\d\d\d\d-\d\d(-\d\d(T\d\d:\d\d(:\d\d)?)?)?Z$/) {
 			# supply missing parts of date, after clipping off 'Z'
+			# We can return here without needing to create a DateTime object.
 			return substr($date, 0, -1) . substr('0000-00-00T00:00:00Z', length($date)-1);
 		}
+
+		# is it a single integer? (unix epoch time)
+		if ($date =~ /^\d+$/) {
+			my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst)= gmtime($date);
+			# We can return here without needing to create a DateTime object.
+			return sprintf('%4d-%2d-%2dT%2d:%2d:%2dZ', $year+1900, $mon, $mday, $hour, $min, $sec);
+		}
+
 		# is it a relative date?
 		if ($date =~ /^(\d+)([DWMY])$/) {
 			require DateTime;
@@ -228,55 +245,179 @@ sub canonicalDate {
 		else {
 			my $dt= $self->dateParser->extract_datetime($date);
 			$self->dateParser->success
-				or die "Invalid date: '$date'\n";
-			if ($dt->time_zone eq 'floating') {
-				$dt->set_time_zone('local');
-			}
-			$dt->set_time_zone('UTC');
-			return $dt->ymd.'T'.$dt->hms.'Z';
+				or croak "Invalid date: '$date'\n";
+			$date= $dt;
 		}
-	} else {
-		# or if its already a DateTime object, we just have to check the timezone
-		if ($date->time_zone ne 'UTC') {
-			$date= $date->clone();
-			$date->set_time_zone('UTC');
-		}
-		return $date->ymd.'T'.$date->hms.'Z';
 	}
+	else {
+		croak "Expected DateTime object but got ".ref($date)
+			unless $date->isa('DateTime');
+		$date= $date->clone();
+	}
+
+	# Convert timezone to UTC.  Floating is treated as local time.
+	$date->set_time_zone('local')
+		if ($date->time_zone eq 'floating');
+	$date->set_time_zone('UTC')
+		if ($date->time_zone ne 'UTC');
+
+	return $date->ymd.'T'.$date->hms.'Z';
+}
+
+sub snapshotIndex {
+	my $self= shift;
+	$self->{snapshotIndex} ||= do {
+		open my $fh, "<", $self->snapIndexFile
+			or die "Failed to read '".$self->snapIndexFile."': $!\n";
+		my $header= <$fh>;
+		$header eq "Timestampt\tHash\tComment\n"
+			or die "Invalid snapshot index (wrong header)\n";
+		my @entries;
+		while (<$fh>) {
+			chomp;
+			my @fields= split /[\t]/, $_, 3;
+			scalar(@fields) == 3
+				or die "Invalid entry in '".$self->snapIndexFile."': \"$_\"\n";
+			push @entries, \@fields;
+		}
+		\@entries;
+	};
+}
+
+sub getSnapshot {
+	my ($self, $targetDate)= @_;
+	my $array= $self->snapshotIndex;
+	
+	return undef unless @$array;
+	
+	# if targetEpoch is undef, return the latest snapshot
+	return $array->[-1] unless defined $targetDate;
+	$targetDate= $self->canonicalDate($targetDate);
+	
+	my ($min, $max, $mid)= (-1, $#$array);
+	while ($min < $max) {
+		$mid= ($min+$max+1)>>1;
+		if ($targetDate ge $array->[$mid][0]) {
+			$min= $mid;
+		} else {
+			$max= $mid-1;
+		}
+	}
+	return undef if $max < 0;
+	
+	my $hash= $array->[$min][1];
+	my $snap= $self->cas->getDir($hash);
+	$snap;
+}
+
+sub getSnapshotOrDie {
+	my ($self, $date)= @_;
+	$self->getSnapshot($date)
+		or die defined $date? "No snapshot existed on date $date\n" : "No snapshots recorded yet\n";
+}
+	
+sub saveSnapshot {
+	my ($self, $entries, $metadata)= @_;
+	
+	ref $entries eq 'ARRAY'
+		and scalar(@$entries) == 1
+		and $entries->[0]->name eq ''
+		or croak "Expected array of one entry named ''";
+
+	# Default the timestamp to 'now'
+	$metadata->{timestamp}= time
+		unless defined $metadata->{timestamp};
+	
+	# Convert to standard date format
+	$metadata->{timestamp}= $self->canonicalDate($metadata->{timestamp});
+	
+	my $array= $self->snapshotIndex;
+	# Timestamps must be in cronological order
+	# (we could insert-sort here, but people should only ever be adding "new" snapshots...)
+	!scalar(@$array)
+		or $metadata->{timestamp} ge $array->[-1][0]
+		or croak "New timestamp '$metadata->{timestamp}' must be later than last recorded timestamp '$array->[-1][0]'";
+	
+	# Serialize the new snapshot and store it in the CAS
+	my $encoded= App::Casbak::Snapshot->SerializeEntries($entries, $metadata);
+	my $hash= $self->cas->put($encoded);
+	
+	# Append the new snapshot to the end of the snapshot index
+	push @$array, [ $metadata->{timestamp}, $hash, $metadata->{comment} || '' ];
+	# and write the new index file
+	try {
+		$self->_writeSnapIndex;
+	}
+	catch {
+		croak "$_\nThe entry that would have been written is: '$metadata->{timestamp} $hash'\n";
+	};
+	1;
+}
+
+sub _writeSnapIndex {
+	my $self= shift;
+	my $tmpFile= $self->snapIndexFile.'.tmp';
+	open my $fh, ">", $tmpFile
+		or croak "Cannot write to '$tmpFile': $!\n";
+	print $fh "Timestampt\tHash\tComment\n";
+	for my $snap (@{$self->snapshotIndex}) {
+		print $fh join("\t", @$snap)."\n";
+	}
+	close $fh
+		or croak "Cannot save '$tmpFile': $!\n";
+	rename $tmpFile, $self->snapIndexFile
+		or croak "Cannot replace '".$self->snapIndexFile."': $!\n";
+	1;
 }
 
 sub init {
 	my ($class, $params)= @_;
 	Trace('Casbak->init(): ', $params);
+
+	# Default to current dir
 	my $dir= $params->{backupDir} || '.';
-	my @entries= grep { $_ ne '.' && $_ ne '..' } <$dir/*>;
-	scalar(@entries)
-		and die "Backups may only be initialized in an empty directory\n";
 	
+	# Directory must exist and be empty
+	my @entries= grep { $_ ne '.' && $_ ne '..' } <$dir/*>;
+	-d $dir and !scalar(@entries)
+		or croak "Backups may only be initialized in an empty directory\n";
+
+	# The default store is Store::Simple
 	$params->{cas}{store} ||= { CLASS => 'File::CAS::Store::Simple' };
+
+	# Auto-coerce class names into a hash with CLASS key.
 	$params->{cas}{store}= { CLASS => $params->{store} }
 		unless ref $params->{cas}{store};
+
+	# Make sure module is loaded, so we can inspect its constructor params
 	$params->{cas}{store}{CLASS}->can('new')
-		or require File::Spec->catfile(split('::',$params->{cas}{store}{CLASS})).'.pm';
-	
+		or _requireClass($params->{cas}{store}{CLASS});
+
 	my %validParams= map { $_ => 1 } $params->{cas}{store}{CLASS}->_ctor_params;
+
+	# If the store class supports 'path', we supply $backupDir/store as the default.
 	$params->{cas}{store}{path}= 'store'
 		if (!defined $params->{cas}{store}{path} and $validParams{path});
+
+	# If the store class supports 'create', we request it.
 	$params->{cas}{store}{create}= 1
 		if (!defined $params->{cas}{store}{create} and $validParams{create});
-	
+
+	# Initialize snapshotIndex to prevent it from getting loaded from a file that doesn't exist yet.
+	$params->{snapshotIndex}= [];
+
 	my $self= $class->new($params);
-	
+
 	# success? then save out the parameters
+	my $cfg= $self->getConfig;
+	my $json= JSON->new->utf8->pretty->canonical->encode($cfg);
 	my $fd;
-	require YAML;
-	my $cfg= YAML::Dump($self->getConfig);
-	open($fd, ">", $self->cfgFile) && (print $fd $cfg) && close($fd)
-		or die "Error writing configuration file '".$self->cfgFile."': $!\n";
+	open($fd, ">", $self->cfgFile) && (print $fd $json) && close($fd)
+		or croak "Error writing configuration file '".$self->cfgFile."': $!\n";
 	open($fd, ">", $self->logFile) && close($fd)
-		or die "Error writing log file: $!\n";
-	open($fd, ">", $self->rootsFile) && close($fd)
-		or die "Error writing snapshots file: $!\n";
+		or croak "Error writing log file: $!\n";
+	$self->_writeSnapIndex;
+	$self;
 }
 
 sub importTree {
@@ -286,15 +427,18 @@ sub importTree {
 	my ($srcPath, $dstPath, $rootEnt)= ($p{real}, $p{virt}, $p{root});
 
 	# The Root Dir::Entry defaults to the latest snapshot
-	$rootEnt= $self->getSnapshot()
-		unless defined $rootEnt;
+	unless (defined $rootEnt) {
+		my $snap= $self->getSnapshot();
+		$rootEnt= $snap->rootEntry
+			if defined $snap;
+	}
 	
 	# If we're starting from *nothing*, we fake the root Dir::Entry by
 	#   supplying the known hash of the canonical "Empty Directory"
 	$rootEnt= $self->cas->getEmptyDirHash()
 		unless defined $rootEnt;
 	
-	# Did they give is a proper DirEnt, or just a hash?
+	# Did they give us a proper DirEnt, or just a hash?
 	if (!ref $rootEnt) {
 		# They gave us a hash.  Convert to Dir::Entry.
 		$rootEnt= File::CAS::Dir::Entry->new( name => '', type => 'dir', hash => $rootEnt );
@@ -310,6 +454,8 @@ sub importTree {
 	# Any missing directories will create generic/empty Dir::Entry objects.
 	my $err;
 	my $resolvedDest= $self->cas->resolvePathPartial($rootEnt, $dstPath, \$err);
+	croak "Can't resolve destination directory: $err"
+		if defined $err;
 	
 	# We always allow the final path element to be created/overwritten, but we only
 	# allow inbetween directories to be created if the user requested that feature.
@@ -320,8 +466,8 @@ sub importTree {
 
 	# Now inspect the source entry in the real filesystem
 	my $srcEnt= $self->cas->scanner->scanDirEnt($srcPath)
-		or die "Cannot stat '$srcPath'\n";
-	# Its probably a dir, but we also allow importing single files.
+		or croak "Cannot stat '$srcPath'";
+	# It is probably a dir, but we also allow importing single files.
 	if ($srcEnt->{type} eq 'dir') {
 		my $hintDir;
 		if (defined $resolvedDest->[-1]) {
@@ -340,7 +486,7 @@ sub importTree {
 		#  $result = { name => 'bar', create_ts => 12345, unix_uid => 1002 };
 		my %attrs= %{$srcEnt->asHash};
 		delete $attrs{name};
-		%attrs= %{$dstEnt->asHash}, %attrs;
+		%attrs= ( %{$resolvedDest->[-1]->asHash}, %attrs );
 		$resolvedDest->[-1]= File::CAS::Dir::Entry->new(%attrs);
 	}
 	else {
@@ -363,7 +509,7 @@ sub importTree {
 	}
 	
 	# Return the new root Dir::Entry (caller will likely save this as a snapshot)
-	return $resolvedDest[0];
+	return $resolvedDest->[0];
 }
 
 

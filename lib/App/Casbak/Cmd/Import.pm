@@ -9,13 +9,20 @@ sub ShortDescription {
 	"Import files from filesystem to virtual path in backup"
 }
 
+# Array of source=>dest pairs to process
 sub paths { $_[0]{paths} }
 sub path_list { @{$_[0]->paths} }
+
+# Flag for whether to only use filesystem metadata (size, mtime) instead of re-hashing all the files
 sub compareMetaOnly { $_[0]{compareMetaOnly} }
+
+# Set of arbitrary metadata to attach to snapshot
+sub snapshotMeta { $_[0]{snapshotMeta} }
 
 sub _ctor {
 	my ($class, $params)= @_;
 	$params->{paths} ||= [];
+	$params->{snapshotMeta} ||= {};
 	$class->SUPER::_ctor($params);
 }
 
@@ -26,11 +33,11 @@ sub applyArguments {
 	Getopt::Long::Configure(qw: no_ignore_case bundling permute :);
 	Getopt::Long::GetOptionsFromArray(\@args,
 		$self->_baseGetoptConfig,
-		'quick'   => \$self->{compareMetaOnly},
-		'<>'      => sub { $self->add_path("$_[1]") },
-		'as=s'    => sub { $self->set_virtual_path("$_[1]") },
+		'quick'       => \$self->{compareMetaOnly},
+		'<>'          => sub { $self->add_path("$_[1]") },
+		'as=s'        => sub { $self->set_virtual_path("$_[1]") },
+		'comment|m=s' => \$self->snapshotMeta->{comment},
 		) or die "\n";
-	
 }
 
 sub add_path {
@@ -48,7 +55,7 @@ sub set_virtual_path {
 sub run {
 	my $self= shift;
 	
-	unless scalar($self->path_list) {
+	unless (scalar $self->path_list) {
 		my $msg= "No paths specified.  Nothing to do\n";
 		$self->allowNoop or die $msg;
 		warn $msg;
@@ -59,17 +66,22 @@ sub run {
 	my $casbak= App::Casbak->new($self->casbakConfig);
 	
 	# Start from current snapshot.
-	# Note that $root is a checksum string and not an object, here.
-	# It will get inflated to an object during 'importTree'
+	# (It could also be undef, which is OK)
 	my $snap= $casbak->getSnapshot();
+	my $root= $snap? $snap->rootEntry : undef;
 
 	for my $pathSpec ($self->path_list) {
-		$root= $casbak->importTree(snapshot => $snap, %$pathSpec, compareMetaOnly => $self->compareMetaOnly);
+		$root= $casbak->importTree(root => $root, %$pathSpec, compareMetaOnly => $self->compareMetaOnly);
 	}
 	
-	# 
-	$casbak->saveSnapshot($root);
+	# TODO: Fill in interesting metadata about this backup (duration, num files, size increase, etc)
+	
+	# Save this new root as a snapshot
+	$casbak->saveSnapshot([$root], $self->snapshotMeta);
+	1;
 }
+
+1;
 
 __END__
 
