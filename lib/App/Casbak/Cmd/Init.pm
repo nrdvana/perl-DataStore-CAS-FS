@@ -120,7 +120,7 @@ STORE_CLASS is one of: 'Simple'
 DIR_CLASS is one of: 'Universal', 'Minimal', 'Unix'
 
 Each name=value pair is treated as an argument to the constructor of App::Casbak.
-Use dotted notation to build a hierarchy, like "cas.store.digest=SHA-256".
+You may use dotted notation for sub-objects, like "cas.store.digest=SHA-256".
 
 See the documentation for App::Casbak, File::CAS, File::CAS::Store::*
 and File::CAS::Scanner for all available constructor parameters.
@@ -148,14 +148,14 @@ This is a shorthand convenience for "cas.store.CLASS=".  You also do
 not need to specify the full class name, and can use strings like
 "Simple" to refer to File::CAS::Store::Simple.
 
-Future popular stores might also have some sort of URL spec to both
-indicate the type and connection parameters in one convenient string.
+Future popular stores might also have some sort of URI spec to indicate
+both the type and the connection parameters in one convenient string.
 
 =item --digest ALGORITHM_NAME
 
 This is a shorthand for "cas.store.digest=", and should apply to most
 stores.  This controls which hash algorithm is used to hash the files.
-ALGORITHM_NAME is passed directly to the Digest module constructor.
+ALGORITHM_NAME is passed directly to perl's Digest module constructor.
 See "perldoc Digest" for the list available on your system.
 
 =item -d
@@ -176,7 +176,7 @@ This is a convenience for setting "cas.scanner.dirClass="
 =item Universal
 
 use File::CAS::Dir, which encodes all metadata in JSON, which isn't terribly
-efficient but can store anything you need to store.
+efficient but stores everything you have available.
 
 =item Minimal
 
@@ -190,7 +190,7 @@ lacks a modify-timestamp.
 
 =item Unix
 
-use File::CAS::Dir::Unix, which stores all the standard Unix "stat()" values
+use File::CAS::Dir::Unix, which stores all the useful Unix "stat()" values
 in a relatively efficient (but portable) manner.  Timestamps are not limited
 by 32-bit (which will become a major factor in the coming century).
 
