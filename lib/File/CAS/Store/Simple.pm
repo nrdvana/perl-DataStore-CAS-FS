@@ -47,7 +47,6 @@ use Carp;
 use Try::Tiny;
 use IO::File;
 use Digest;
-use Cwd ();
 use File::Spec::Functions 'catfile', 'catdir';
 use File::Copy;
 use File::Temp 'tempfile';
@@ -59,10 +58,6 @@ use File::CAS::File;
 =head2 path
 
 Read-only.  The filesystem path where the store is rooted.
-
-The root of the store will always have a file named 'file_cas_store_simple.yml'
-and will contain a hash entry for the empty string, and a bunch of directories
-for each hash prefix: '00' .. 'FF'.
 
 =head2 copyBufferSize
 
@@ -96,7 +91,6 @@ file, most likely encoded as YAML.
 =cut
 
 sub path           { $_[0]{path} }
-sub pathReal       { $_[0]{pathReal} }
 sub digest         { $_[0]{digest} }
 
 sub copyBufferSize { $_[0]{copyBufferSize}= $_[1] if (@_ > 1); $_[0]{copyBufferSize} || 256*1024 }
@@ -109,17 +103,7 @@ sub hashOfNull     { $_[0]{hashOfNull} }
 Constructor.  It will load (and possibly create) a CAS Store.
 
 'path' points to the cas directory.  Trailing slashes don't matter.
-If 'path' is relative, it will be resolved during the constructor to an
-absolute real path.  (the 'path' attribute remains the same, in case you
-want to reference it later, but it cannot be changed)  The 'pathReal'
-attribute shows the resolved path.
-
-'pathBase' overrides the "current directory" for resolving a relative 'path'.
-We want to support relative paths, but the current directory is essentially
-a global variable, which can be inconvenient.
-(While we could require the user to resolve relative paths first, and keep
-that detail out of this module, they might later want to know whether this
-object was initialized from a relative or absolute path, so we allow it.)
+It is a good idea to use an absolute path in case you 'chdir' later.
 
 'copyBufferSize' initializes the respective attribute.
 
@@ -146,27 +130,24 @@ sub _ctor_params { @_ctor_params; }
 sub _ctor {
 	my ($class, $params)= @_;
 	my %p= map { $_ => delete $params->{$_} } @_ctor_params;
+	use Data::Printer colored => 1;
 	
 	# Check for invalid params
 	croak "Invalid parameter: ".join(', ', keys %$params)
 		if (keys %$params);
-	
 	# extract constructor flags which don't belong in attributes
 	my $create= delete $p{create};
 	my $ignoreVersion= delete $p{ignoreVersion};
-	my $pathBase= delete $p{pathBase};
 	my $defaultDigest= delete $p{defaultDigest} || 'SHA-1';
 	
 	# Calculate the absolute real path
 	defined $p{path} or $p{path}= '.';
-	defined $pathBase or $pathBase= Cwd::getcwd();
-	$p{pathReal}= Cwd::realpath( File::Spec->rel2abs( $p{path}, $pathBase ) );
 	
 	# Check directory
-	unless (-f catfile($p{pathReal}, 'conf', 'VERSION')
-		and -f catfile($p{pathReal}, 'conf', 'DIGEST') )
+	unless (-f catfile($p{path}, 'conf', 'VERSION')
+		and -f catfile($p{path}, 'conf', 'DIGEST') )
 	{
-		croak "Path does not appear to be a valid CAS : '$p{pathReal}'"
+		croak "Path does not appear to be a valid CAS : '$p{path}'"
 			unless $create;
 		
 		# Here, we are creating a new CAS directory
@@ -191,7 +172,7 @@ sub _ctor {
 	
 	# Properly initialized CAS will always contain an entry for the empty string
 	$self->{hashOfNull}= $self->_newHash->hexdigest();
-	croak "CAS dir '".$self->pathReal."' is missing a required file (has it been initialized?)"
+	croak "CAS dir '".$self->path."' is missing a required file (has it been initialized?)"
 		unless $self->get($self->hashOfNull);
 	
 	return $self;
@@ -200,7 +181,7 @@ sub _ctor {
 # Called during constrctor when creating a new Store directory.
 sub _initializeStore {
 	my ($self)= @_;
-	make_path(catdir($self->pathReal, 'conf'));
+	make_path(catdir($self->path, 'conf'));
 	$self->_writeConfig('VERSION', ref($self).' '.$VERSION."\n");
 	$self->_writeConfig('DIGEST', $self->digest."\n");
 	$self->put('');
@@ -213,7 +194,7 @@ sub _initializeStore {
 
 sub _writeConfig {
 	my ($self, $fname, $content)= @_;
-	my $path= catfile($self->pathReal, 'conf', $fname);
+	my $path= catfile($self->path, 'conf', $fname);
 	my $f= IO::File->new($path, '>')
 		or die "Failed to open '$path' for writing: $!\n";
 	$f->print($content) && $f->close()
@@ -221,7 +202,7 @@ sub _writeConfig {
 }
 sub _readConfig {
 	my ($self, $fname)= @_;
-	my $path= catfile($self->pathReal, 'conf', $fname);
+	my $path= catfile($self->path, 'conf', $fname);
 	open(my $f, '<', $path)
 		or die "Failed to read '$path' : $!\n";
 	local $/= undef;
@@ -249,7 +230,7 @@ sub _checkVersion {
 	# Version str is "$PACKAGE $VERSION\n", where version is a number but might have a string suffix on it
 	my $version_str= $self->_readConfig('VERSION');
 	($version_str =~ /^([A-Za-z0-9:_]+) ([0-9.]+)/)
-		or die "Invalid version string in storage dir '".$self->pathReal."'\n";
+		or die "Invalid version string in storage dir '".$self->path."'\n";
 
 	# Check $PACKAGE
 	($1 eq ref($self))
@@ -257,7 +238,7 @@ sub _checkVersion {
 
 	# Check $VERSION
 	($2 > 0 and $2 <= $VERSION)
-		or die "Storage dir '".$self->pathReal."' was created by version $2 of ".ref($self).", but this is only $VERSION\n";
+		or die "Storage dir '".$self->path."' was created by version $2 of ".ref($self).", but this is only $VERSION\n";
 }
 
 =head2 getConfig
@@ -272,7 +253,6 @@ sub getConfig {
 	return {
 		CLASS => ref $self,
 		VERSION => $VERSION,
-		digest => $self->digest,
 		path => $self->path,
 		(defined $self->{copyBufferSize}? ( copyBufferSize => $self->copybufferSize ) : ()),
 	};
@@ -326,7 +306,7 @@ sub put {
 		make_path($dir);
 		($destFh, $fname)= tempfile( 'temp-XXXXXXXX', DIR => $dir );
 	} else {
-		($destFh, $fname)= tempfile( 'temp-XXXXXXXX', DIR => $self->pathReal );
+		($destFh, $fname)= tempfile( 'temp-XXXXXXXX', DIR => $self->path );
 	}
 	binmode $destFh;
 	
@@ -491,7 +471,7 @@ sub _newHash {
 
 sub _pathForHash {
 	my ($self, $hash)= @_;
-	catfile( $self->pathReal, substr($hash, 0, 2), substr($hash, 2, 2) ), substr($hash,4);
+	catfile( $self->path, substr($hash, 0, 2), substr($hash, 2, 2) ), substr($hash,4);
 }
 
 =head1 AUTHOR
