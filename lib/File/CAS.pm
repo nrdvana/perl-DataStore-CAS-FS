@@ -165,7 +165,7 @@ sub new {
 	if (ref $p{store} eq 'HASH') {
 		my %storeParams= %{$p{store}};
 		my $storeClass= delete $storeParams{CLASS} || 'File::CAS::Store::Simple';
-		_requireClass($storeClass);
+		_requireClass($storeClass, delete $storeParams{VERSION});
 		$storeClass->isa('File::CAS::Store')
 			or die "'$storeClass' is not a valid Store class\n";
 		$p{store}= $storeClass->new(\%storeParams);
@@ -176,7 +176,7 @@ sub new {
 	if (ref $p{scanner} eq 'HASH') {
 		my %scannerParams= %{$p{scanner}};
 		my $scannerClass= delete $scannerParams{CLASS} || 'File::CAS::Scanner';
-		_requireClass($scannerClass);
+		_requireClass($scannerClass, delete $scannerParams{VERSION});
 		$scannerClass->isa('File::CAS::Scanner')
 			or die "'$scannerClass' is not a valid Scanner class\n";
 		$p{scanner}= $scannerClass->new(\%scannerParams);
@@ -505,7 +505,7 @@ sub _resolvePath {
 	my @subPath= ref($path)? @$path : File::Spec->splitdir($path);
 	
 	my @dirEnts= ( $rootDirEnt );
-	die "Root directory must be a directory"
+	return "Root directory must be a directory"
 		unless $rootDirEnt->type eq 'dir';
 
 	while (@subPath) {
@@ -550,7 +550,7 @@ sub _resolvePath {
 		# We handle '..' procedurally, moving up one real directory and *not* backing out of a symlink.
 		# This is the same way the kernel does it, but perhaps shell behavior is preferred...
 		if ($name eq '..') {
-			die "Cannot access '..' at root directory"
+			return "Cannot access '..' at root directory"
 				unless @dirEnts > 1;
 			pop @dirEnts;
 		}
