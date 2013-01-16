@@ -185,13 +185,13 @@ sub new {
 	$class->_ctor(\%p);
 }
 
-sub _requireClass($) {
-	my $pkg= shift;
+sub _requireClass {
+	my ($pkg, $version)= @_;
 	
 	# We're loading user-supplied class names.  Protect against code injection.
-	($pkg =~ /^[A-Za-z0-9_:]+$/)
+	($pkg =~ /^[A-Za-z][A-Za-z0-9_]*(::[A-Za-z][A-Za-z0-9_]*)*$/)
 		or croak "Invalid perl package name: '$pkg'\n";
-	
+
 	unless ($pkg->can('new')) {
 		my ($fail, $err)= do {
 			local $@;
@@ -199,6 +199,16 @@ sub _requireClass($) {
 		};
 		die $err if $fail;
 	}
+	
+	if (defined $version) {
+		no strict 'refs';
+		my $v= ${$pkg.'::VERSION'};
+		defined $v
+			or croak "Package '$pkg' is missing a VERSION\n";
+		($v >= $version)
+			or croak "Package '$pkg' version '$v' is less than required '$version'\n";
+	}
+	
 	1;
 }
 
