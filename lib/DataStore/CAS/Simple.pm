@@ -63,22 +63,27 @@ of the hash which then become a directory name.
 For example, "[ 2, 2 ]" would turn a hash of "1234567890" into a path of
 "12/34/567890".
 
-=head2 _fanout_regex
-
-Read-only.  A regex-ref which splits a digest hash into the parts needed
-for the path name.  A fanout of "[ 2, 2 ]" creates a regex of "/(.{2})(.{2})(.*)/"
-
 =head2 copy_buffer_size
 
 Number of bytes to copy at a time when saving data from a filehandle to the
 CAS.  This is a performance hint, and the default is usually fine.
 
-=head2 store_format_version
+=head2 storage_format_version
+
+Hashref of version information about the modules that created the store.
+Newer library versions can determine whether the storage is using an old
+format using this information.
+
+=head2 _fanout_regex
+
+Read-only.  A regex-ref which splits a digest hash into the parts needed
+for the path name.
+A fanout of "[ 2, 2 ]" creates a regex of "/(.{2})(.{2})(.*)/"
 
 
 =cut
 
-sub path             { $_[0]{path} }
+sub path   { $_[0]{path} }
 
 sub fanout { [ @{$_[0]{fanout}} ] }
 
@@ -89,7 +94,10 @@ sub _fanout_regex {
 	};
 }
 
-sub copy_buffer_size { $_[0]{copy_buffer_size}= $_[1] if (@_ > 1); $_[0]{copy_buffer_size} || 256*1024 }
+sub copy_buffer_size {
+	$_[0]{copy_buffer_size}= $_[1] if (@_ > 1);
+	$_[0]{copy_buffer_size} || 256*1024
+}
 
 =head1 METHODS
 
@@ -111,9 +119,9 @@ The 'digest' and 'fanout' attributes can only be initialized if
 the store is being created.
 Otherwise, it is loaded from the store's configuration.
 
-'ignore_version' allows you to load a Store even if it was created with a newer
-version of the ::CAS::Simple package that you are now using.  (or a different
-package entirely)
+'ignore_version' allows you to load a Store even if it was created with a
+newer version of the ::CAS::Simple package that you are now using.
+(or a different package entirely)
 
 To dynamically find out which parameters the constructor accepts,
 call $class->_ctor_params(), which returns a list of valid keys.
@@ -162,7 +170,8 @@ sub _ctor {
 	unless ($create{_notest}) {
 		# Properly initialized CAS will always contain an entry for the empty string
 		$self->{hash_of_null}= $self->_new_digest->hexdigest();
-		croak "CAS dir '".$self->path."' is missing a required file (has it been initialized?)"
+		croak "CAS dir '".$self->path."' is missing a required file"
+		     ." (has it been initialized?)"
 			unless $self->validate($self->hash_of_null);
 	}
 
@@ -184,7 +193,8 @@ sub create_store {
 	$params{digest} ||= 'SHA-1';
 	# Make sure the algorithm is available
 	my $found= ( try { defined $class->_new_digest($params{digest}); } catch { 0; } )
-		or croak "Digest algorithm '".$params{digest}."' is not available on this system.\n";
+		or croak "Digest algorithm '".$params{digest}."'"
+		        ." is not available on this system.\n";
 
 	$params{fanout} ||= [ 1, 2 ];
 	# make sure the fanout isn't insane
@@ -206,26 +216,33 @@ sub _load_config {
 	my ($class, $path, $flags)= @_;
 	my %params;
 	
-	# Version str is "$PACKAGE $VERSION\n", where version is a number but might have a string suffix on it
-	$params{store_format_versions}= $class->_parse_version( $class->_read_config_setting($path, 'VERSION') );
+	# Version str is "$PACKAGE $VERSION\n", where version is a number but might have a
+	#   string suffix on it
+	$params{storage_format_version}=
+		$class->_parse_version($class->_read_config_setting($path, 'VERSION'));
 	unless ($flags->{ignore_version}) {
-		while (my ($pkg, $ver)= each %{$params{store_format_versions}}) {
+		while (my ($pkg, $ver)= each %{$params{storage_format_version}}) {
 			defined *{$pkg.'::VERSION'}
-				or croak "Class mismatch: storage dir was created using $pkg but that package is not loaded now\n";
+				or croak "Class mismatch: storage dir was created using $pkg"
+				        ." but that package is not loaded now\n";
 			my $curVer= do { no strict 'refs'; ${$pkg.'::VERSION'} };
 			($ver > 0 and $ver <= $curVer)
-				or croak "Version mismatch: storage dir was created using version '$ver' of $pkg but this is only $curVer\n";
+				or croak "Version mismatch: storage dir was created using"
+				        ." version '$ver' of $pkg but this is only $curVer\n";
 		}
 	}
 
 	# Get the digest algorithm name
-	$params{digest}= $class->_parse_digest($class->_read_config_setting($path, 'digest'));
+	$params{digest}=
+		$class->_parse_digest($class->_read_config_setting($path, 'digest'));
 	# Check for digest algorithm availability
 	my $found= ( try { $class->_new_digest($params{digest}); 1; } catch { 0; } )
-		or croak "Digest algorithm '".$params{digest}."' is not available on this system.\n";
+		or croak "Digest algorithm '".$params{digest}."'"
+		        ." is not available on this system.\n";
 
 	# Get the directory fan-out specification
-	$params{fanout}= $class->_parse_fanout($class->_read_config_setting($path, 'fanout'));
+	$params{fanout}=
+		$class->_parse_fanout($class->_read_config_setting($path, 'fanout'));
 
 	return \%params;
 }
@@ -416,10 +433,12 @@ sub put_handle {
 
 	# Read chunks of the stream, and either hash or save them or both.
 	my $buf;
-	my $is_real_fd= (fileno($fh) >= 0);
+	my $is_real_fd= (defined fileno($fh) and fileno($fh) >= 0);
 	binmode $fh;
 	while(1) {
-		my $got= $is_real_fd? sysread($fh, $buf, $self->copy_buffer_size) : read($fh, $buf, $self->copy_buffer_size);
+		my $got= $is_real_fd?
+			sysread($fh, $buf, $self->copy_buffer_size)
+			: read($fh, $buf, $self->copy_buffer_size);
 		if ($got) {
 			# hash it (maybe)
 			$digest->add($buf) unless defined $dest_hash;
@@ -468,7 +487,7 @@ sub validate {
 
 	open (my $fh, "<:raw", $path)
 		or return 0; # don't die.  Errors mean "not valid".
-	my $hash2= try { $self->_new_digest->addfile($fh)->hexdigest } catch { '' };
+	my $hash2= try { $self->_new_digest->addfile($fh)->hexdigest } catch {''};
 	return ($hash eq $hash2? 1 : 0);
 }
 
