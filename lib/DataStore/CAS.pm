@@ -97,10 +97,6 @@ Standard parameters:
 
 =over 10
 
-=item path_base
-
-(see attribute)
-
 =item digest
 
 For storage engines which can use a pluggable digest algorithm, this
@@ -115,7 +111,7 @@ constructor).
 sub new {
 	my $class= shift;
 	my %params= (scalar(@_) == 1 && ref($_[0]))? %{$_[0]} : @_;
-	$class->_ctor({  });
+	$class->_ctor(\%params);
 }
 
 =head2 _ctor_params()
@@ -130,7 +126,7 @@ modifyable hashref whose keys are in the set of _ctor_params.
 
 =cut
 
-our @_ctor_params= qw: path_base :;
+our @_ctor_params= qw: digest :;
 sub _ctor_params { @_ctor_params; }
 sub _ctor {
 	my ($class, $params)= @_;
@@ -418,6 +414,8 @@ BEGIN { $INC{'DataStore/CAS/File.pm'}= 1; }
 package DataStore::CAS::File;
 use strict;
 use warnings;
+use Carp;
+use Try::Tiny;
 
 sub store { $_[0]{store} }
 sub hash  { $_[0]{hash} }
@@ -429,7 +427,7 @@ sub open {
 		if @_ == 0;
 	return $self->{store}->file_open($self, { @_ })
 		if @_ > 1;
-	return $self->{store}->file_open($self, { layer => $args[0] })
+	return $self->{store}->file_open($self, { layer => $_[0] })
 		if @_ == 1 and !ref $_[0];
 	croak "Wrong arguments to 'open'";
 };

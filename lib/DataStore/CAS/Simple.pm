@@ -54,7 +54,7 @@ Read-only.  The filesystem path where the store is rooted.
 Read-only.  Algorithm used to calculate the hash values.  This can only be
 set in the constructor when a new store is being created.  Default is 'SHA-1'.
 
-=head2 directory_fanout
+=head2 fanout
 
 Read-only.  Returns arrayref of pattern used to split digest hashes into
 directories.  Each digit represents a number of characters from the front
@@ -63,7 +63,7 @@ of the hash which then become a directory name.
 For example, "[ 2, 2 ]" would turn a hash of "1234567890" into a path of
 "12/34/567890".
 
-=head2 directory_fanout_regex
+=head2 _fanout_regex
 
 Read-only.  A regex-ref which splits a digest hash into the parts needed
 for the path name.  A fanout of "[ 2, 2 ]" creates a regex of "/(.{2})(.{2})(.*)/"
@@ -73,15 +73,18 @@ for the path name.  A fanout of "[ 2, 2 ]" creates a regex of "/(.{2})(.{2})(.*)
 Number of bytes to copy at a time when saving data from a filehandle to the
 CAS.  This is a performance hint, and the default is usually fine.
 
+=head2 store_format_version
+
+
 =cut
 
 sub path             { $_[0]{path} }
 
-sub directory_fanout { [ @{$_[0]{directory_fanout}} ] }
+sub fanout { [ @{$_[0]{fanout}} ] }
 
-sub directory_fanout_regex {
-	$_[0]{directory_fanout_regex} ||= do {
-		my $regex= join('', map { "(.{$_})" } $_[0]->directory_fanout ).'(.*)';
+sub _fanout_regex {
+	$_[0]{_fanout_regex} ||= do {
+		my $regex= join('', map { "(.{$_})" } @{$_[0]->fanout} ).'(.*)';
 		qr/$regex/;
 	};
 }
@@ -94,16 +97,19 @@ sub copy_buffer_size { $_[0]{copy_buffer_size}= $_[1] if (@_ > 1); $_[0]{copy_bu
 
 Constructor.  It will load (and possibly create) a CAS Store.
 
+If 'create' is specified, and 'path' refers to an empty directory, a fresh
+store will be initialized.  If 'create' is specified and the directory is
+already a valid CAS, 'create' is ignored, as well as 'digest' and
+'fanout'.
+
 'path' points to the cas directory.  Trailing slashes don't matter.
-It is a good idea to use an absolute path in case you 'chdir' later.
+You might want to use an absolute path in case you 'chdir' later.
 
 'copy_buffer_size' initializes the respective attribute.
 
-The 'digest' attribute can only be initialized if the store is being created.
+The 'digest' and 'fanout' attributes can only be initialized if
+the store is being created.
 Otherwise, it is loaded from the store's configuration.
-
-If 'create' is specified, and 'path' refers to an empty directory, a fresh store
-will be initialized.
 
 'ignore_version' allows you to load a Store even if it was created with a newer
 version of the ::CAS::Simple package that you are now using.  (or a different
@@ -116,11 +122,13 @@ call $class->_ctor_params(), which returns a list of valid keys.
 
 # We inherit 'new', and implement '_ctor'.  The parameters to _ctor are always a hash.
 
-our @_ctor_params= qw: path digest copy_buffer_size create ignore_version directory_fanout :;
-sub _ctor_params { ($_[0]->_ctor_params, @_ctor_params); }
+our @_ctor_params= qw: path copy_buffer_size create ignore_version :;
+our @_create_params= qw: digest fanout _notest :;
+sub _ctor_params { ($_[0]->_ctor_params, @_ctor_params, @_create_params); }
 sub _ctor {
 	my ($class, $params)= @_;
 	my %p= map { $_ => delete $params->{$_} } @_ctor_params;
+	my %create= map { $_ => delete $params->{$_} } @_create_params;
 
 	# Check for invalid params
 	croak "Invalid parameter: ".join(', ', keys %$params)
@@ -129,8 +137,6 @@ sub _ctor {
 	# extract constructor flags which don't belong in attributes
 	my $create= delete $p{create};
 	my $ignore_version= delete $p{ignore_version};
-	my $default_digest= delete $p{digest} || 'SHA-1';
-	my $default_fanout= delete $p{directory_fanout} || [ 1, 2 ];
 	
 	# Path is required, and must be a directory
 	croak "Parameter 'path' is required"
@@ -139,62 +145,93 @@ sub _ctor {
 		unless -d $p{path};
 	
 	# Check directory
-	unless (-f catfile($p{path}, 'conf', 'VERSION')
-		and -f catfile($p{path}, 'conf', 'DIGEST') )
-	{
+	unless (-f catfile($p{path}, 'conf', 'VERSION')) {
 		croak "Path does not appear to be a valid CAS : '$p{path}'"
 			unless $create;
 
 		# Here, we are creating a new CAS directory
-		my $self= bless {
-				%p,
-				digest => $default_digest,
-				directory_fanout => $default_fanout
-			}, $class;
-		# But first, make sure we are creating in an empty dir
-		croak "Directory '$path' is not empty"
-			unless $self->_is_dir_empty($p{path});
-		# And make sure the fanout isn't insane
-		$self->_validate_fanout;
-		# Then, write out the configuration and initialize various things.
-		$self->_initialize_store();
-		
-		# We could just use that '$self', but we want to double-check our initialization
-		#  by continuing through the regular constructor code path.
+		$class->create_store( path => $p{path}, %create );
 	}
-	
-	my $self= bless \%p, $class;
-	
-	$self->_load_config();
 
-	try {
-		$self->_check_version();
+	my $cfg= $class->_load_config($p{path}, { ignore_version => $ignore_version });
+	%p= (%p, %$cfg); # merge new parameters loaded from store config
+
+	my $self= $class->SUPER::_ctor($params);
+	%$self= (%$self, %p); # merge our attributes with parent class
+	
+	unless ($create{_notest}) {
+		# Properly initialized CAS will always contain an entry for the empty string
+		$self->{hash_of_null}= $self->_new_digest->hexdigest();
+		croak "CAS dir '".$self->path."' is missing a required file (has it been initialized?)"
+			unless $self->validate($self->hash_of_null);
 	}
-	catch {
-		$ignore_version ? warn($_) : die($_);
-	};
-	
-	# Properly initialized CAS will always contain an entry for the empty string
-	$self->{hash_of_null}= $self->_new_digest->hexdigest();
-	croak "CAS dir '".$self->path."' is missing a required file (has it been initialized?)"
-		unless $self->validate($self->hash_of_null);
-	
+
 	return $self;
 }
 
-# Called during constrctor when creating a new Store directory.
-sub _initialize_store {
-	my ($self)= @_;
-	my $conf_dir= catdir($self->path, 'conf');
+# Create a new store at a specified path.
+# Also called during constrctor when { create => 1 }
+sub create_store {
+	my $class= shift;
+	my %params= (@_ == 1? %{$_[0]} : @_);
+	
+	defined $params{path} or croak "Missing required param 'path'";
+	-d $params{path} or croak "Directory '$params{path}' does not exist";
+	# Make sure we are creating in an empty dir
+	croak "Directory '$params{path}' is not empty\n"
+		unless $class->_is_dir_empty($params{path});
+
+	$params{digest} ||= 'SHA-1';
+	# Make sure the algorithm is available
+	my $found= ( try { defined $class->_new_digest($params{digest}); } catch { 0; } )
+		or croak "Digest algorithm '".$params{digest}."' is not available on this system.\n";
+
+	$params{fanout} ||= [ 1, 2 ];
+	# make sure the fanout isn't insane
+	$params{fanout}= $class->_parse_fanout(join(' ',@{$params{fanout}}));
+
+	my $conf_dir= catdir($params{path}, 'conf');
 	mkdir($conf_dir) or croak "mkdir($conf_dir): $!";
-	$self->_write_config_setting('VERSION', ref($self).' '.$VERSION."\n");
-	$self->_write_config_setting('DIGEST', $self->digest."\n");
-	$self->_write_config_setting('FANOUT', join(' ', @{$self->directory_fanout})."\n");
-	$self->put('');
+	$class->_write_config_setting($params{path}, 'VERSION', $class.' '.$VERSION."\n");
+	$class->_write_config_setting($params{path}, 'digest', $params{digest}."\n");
+	$class->_write_config_setting($params{path}, 'fanout', join(' ', @{$params{fanout}})."\n");
+	
+	# Finally, we add the null string to an instance of the CAS.
+	$class->new(path => $params{path}, _notest => 1)->put('');
+}
+
+# This method loads the digest and fanout configuration and validates it
+# It is called during the constructor.
+sub _load_config {
+	my ($class, $path, $flags)= @_;
+	my %params;
+	
+	# Version str is "$PACKAGE $VERSION\n", where version is a number but might have a string suffix on it
+	$params{store_format_versions}= $class->_parse_version( $class->_read_config_setting($path, 'VERSION') );
+	unless ($flags->{ignore_version}) {
+		while (my ($pkg, $ver)= each %{$params{store_format_versions}}) {
+			defined *{$pkg.'::VERSION'}
+				or croak "Class mismatch: storage dir was created using $pkg but that package is not loaded now\n";
+			my $curVer= do { no strict 'refs'; ${$pkg.'::VERSION'} };
+			($ver > 0 and $ver <= $curVer)
+				or croak "Version mismatch: storage dir was created using version '$ver' of $pkg but this is only $curVer\n";
+		}
+	}
+
+	# Get the digest algorithm name
+	$params{digest}= $class->_parse_digest($class->_read_config_setting($path, 'digest'));
+	# Check for digest algorithm availability
+	my $found= ( try { $class->_new_digest($params{digest}); 1; } catch { 0; } )
+		or croak "Digest algorithm '".$params{digest}."' is not available on this system.\n";
+
+	# Get the directory fan-out specification
+	$params{fanout}= $class->_parse_fanout($class->_read_config_setting($path, 'fanout'));
+
+	return \%params;
 }
 
 sub _is_dir_empty {
-	my ($self, $path)= @_;
+	my (undef, $path)= @_;
 	opendir(my $dh, $path)
 		or die "opendir($path): $!";
 	my @entries= grep { $_ ne '.' and $_ ne '..' } readdir($dh);
@@ -208,70 +245,57 @@ sub _is_dir_empty {
 # Subclasses will likely use YAML.
 
 sub _write_config_setting {
-	my ($self, $fname, $content)= @_;
-	my $path= catfile($self->path, 'conf', $fname);
+	my (undef, $path, $name, $content)= @_;
+	$path= catfile($path, 'conf', $name);
 	open(my $f, '>', $path)
 		or croak "Failed to open '$path' for writing: $!\n";
 	(print $f $content) && (close $f)
 		or croak "Failed while writing '$path': $!\n";
 }
 sub _read_config_setting {
-	my ($self, $fname)= @_;
-	my $path= catfile($self->path, 'conf', $fname);
+	my (undef, $path, $name)= @_;
+	$path= catfile($path, 'conf', $name);
 	open(my $f, '<', $path)
 		or croak "Failed to read '$path' : $!\n";
 	local $/= undef;
-	return <$f>;
+	my $str= <$f>;
+	defined $str and length $str or croak "Failed to read '$path' : $!\n";
+	return $str;
 }
 
-# This method loads the digest and fanout configuration and validates it
-# It is called during the constructor.
-sub _load_config {
-	my $self= shift;
-
-	# Get the digest algorithm name
-	chomp( $self->{digest}= $self->_read_config_setting('DIGEST') );
-	# Check for digest algorithm availability
-	my $found= ( try { $self->_new_digest; 1; } catch { 0; } )
-		or croak "Digest algorithm '".$self->digest."' is not available on this system.\n";
-
-	# Get the fanout
-	$self->{directory_fanout}= [ split /\s+/, $self->_read_config_setting('FANOUT') ];
-	$self->_validate_fanout;
-
-	return 1;
-}
-
-sub _validate_fanout {
-	my $self= shift
+sub _parse_fanout {
+	my (undef, $fanout)= @_;
+	chomp($fanout);
+	my @fanout;
 	# Sanity check on the fanout
-	my $digits= 0;
-	for (@{ $self->directory_fanout }) {
-		$digits+= $_;
-		croak "Too large fanout in one directory ($_)" if $_ > 3;
+	my $total_digits= 0;
+	for (split /\s+/, $fanout) {
+		($_ =~ /^(\d+)$/) or croak "Invalid fanout spec";
+		push @fanout, $1;
+		$total_digits+= $1;
+		croak "Too large fanout in one directory ($1)" if $1 > 3;
 	}
-	croak "Too many digits of fanout! ($digits)" if $digits > 5;
+	croak "Too many digits of fanout! ($total_digits)" if $total_digits > 5;
+	return \@fanout;
 }
 
-# This method loads the version the store was initialized with
-#  and checks to see if we are compatible with it.
-sub _check_version {
-	my $self= shift;
+sub _parse_digest {
+	my (undef, $digest)= @_;
+	chomp($digest);
+	($digest =~ /^(\S+)$/)
+		or croak "Invalid digest algorithm name: '$digest'\n";
+	return $1;
+}
 
-	# Version str is "$PACKAGE $VERSION\n", where version is a number but might have a string suffix on it
-	my $version_str= $self->_read_config_setting('VERSION');
-	($version_str =~ /^([A-Za-z0-9:_]+) ([0-9.]+)/)
-		or croak "Invalid version string in storage dir '".$self->path."'\n";
-
-	# Check $PACKAGE
-	($1 eq ref($self))
-		or croak "Class mismatch: storage dir was created with $1 but you're trying to access it with ".ref($self)."\n";
-
-	# Check $VERSION
-	($2 > 0 and $2 <= $VERSION)
-		or croak "Storage dir '".$self->path."' was created by version $2 of ".ref($self).", but this is only $VERSION\n";
-
-	return 1;
+sub _parse_version {
+	my (undef, $version)= @_;
+	my %versions;
+	for my $line (split /\n/, $version) {
+		($line =~ /^([A-Za-z0-9:_]+) ([0-9.]+)/)
+			or croak "Invalid version string: '$line'\n";
+		$versions{$1}= $2;
+	}
+	return \%versions;
 }
 
 =head2 get( $digest_hash )
@@ -299,7 +323,6 @@ sub get {
 
 sub put_file {
 	my ($self, $file, $flags)= @_;
-	$flags ||= {};
 
 	# Here is where we detect opportunity to perform optimized hard-linking
 	#  when copying to and from CAS implementations which are backed by
@@ -307,13 +330,14 @@ sub put_file {
 	if (ref $file and ref($file)->isa('DataStore::CAS::File')
 		and $file->can('local_file') and length $file->local_file
 	) {
+		$flags= { $flags? %$flags : () }; # make a copy
 		$flags->{link_from_local_file}= $file->local_file;
 		$flags->{known_hash}= $file->hash
 			if ($file->store->digest eq $self->digest);
 	}
 
 	# Else use the default implementation which opens and reads the file.
-	(shift)->SUPER::put_file(@_);
+	$self->SUPER::put_file($file, $flags);
 }
 
 sub _write_all_or_die {
@@ -332,10 +356,9 @@ sub _write_all_or_die {
 }
 
 sub put_handle {
-	my ($self, $data, $flags)= @_;
+	my ($self, $fh, $flags)= @_;
 	my $hardlink_source= $flags->{link_from_local_file};
 	my $dest_hash= $flags->{verify_hash}? undef : $flags->{known_hash};
-	my $scalar= $flags->{source_is_plain_scalar};
 	my $dest_name;
 
 	# If we know the hash...
@@ -351,8 +374,8 @@ sub put_handle {
 			# dry-run succeeds automatically.
 			# we check for missing directories after the first failure,
 			#   in the spirit of keeping the common case fast.
-			if ($flags->{dry_run} or link( $source_file, $dest_name )
-				or ($self->_add_missing_path($dest_hash) and link( $source_file, $dest_name ))
+			if ($flags->{dry_run} or link( $hardlink_source, $dest_name )
+				or ($self->_add_missing_path($dest_hash) and link( $hardlink_source, $dest_name ))
 			) {
 				# record that we added a new hash, if stats enabled.
 				if ($flags->{stats}) {
@@ -368,77 +391,71 @@ sub put_handle {
 	}
 
 	# Create a temp file to write to
-	my ($dest_fh, $temp_name)= tempfile( 'temp-XXXXXXXX', DIR => $self->path )
-		unless $flags->{dry_run};
-
-	# If we don't know the destination hash, but we want to attempt hard-linking,
-	# try hard-linking to ->path and then later rename it to the dest_name
-	if ($hardlink_source && !$flags->{dry_run}) {
-		if (link( $hardlink_source, $temp_name."-lnk" )) {
-			# success - we don't need to copy the file, just checksum it and rename.
-			close($dest_fh);
-			$dest_fh= undef;
-			rename($temp_name."-lnk", $temp_name)
-				or croak "rename(-> $temp_name): $!";
+	my ($temp_file, $need_copy);
+	if (!$flags->{dry_run}) {
+		$temp_file= File::Temp->new( TEMPLATE => 'temp-XXXXXXXX', DIR => $self->path );
+		binmode $temp_file;
+		$need_copy= 1;
+		# If we don't know the destination hash, but we want to attempt hard-linking,
+		# try hard-linking to ->path and then later rename it to the dest_name
+		if ($hardlink_source) {
+			if (link( $hardlink_source, $temp_file."-lnk" )) {
+				# success - we don't need to copy the file, just checksum it and rename.
+				# We cheat, and let the File::Temp object unlink us if an
+				#  exception occurs before we do the final rename().
+				unlink($temp_file);
+				rename($temp_file."-lnk", $temp_file)
+					or croak "rename(-> $temp_file): $!";
+			}
+			# else we failed to hardlink, and will use $dest_fh
 		}
-		# else we failed to hardlink, and will use $dest_fh
 	}
 
-	try {
-		my $digest= $self->_new_digest
-			unless defined $dest_hash;
-		binmode $dest_fh
-			if defined $dest_fh;
+	my $digest= $self->_new_digest
+		unless defined $dest_hash;
 
-		# Read chunks of the stream, and either hash or save them or both.
-		my $buf;
-		while(1) {
-			my $got= sysread($data, $buf, $self->copy_buffer_size);
-			if ($got) {
-				# hash it (maybe)
-				$digest->add($buf) unless defined $dest_hash;
-				# then write to temp file (maybe)
-				_write_all_or_die($dest_fh, $buf) if defined $dest_fh;
-			} elsif (!defined $got) {
-				next if ($!{EINTR} || $!{EAGAIN});
-				croak "while reading input: $!";
-			} else {
-				last;
-			}
-		}
-
-		if ($dest_fh) {
-			close $dest_fh
-				or croak "while saving '$temp_name': $!";
-		}
-
-		unless (defined $dest_hash) {
-			$dest_hash= $digest->hexdigest;
-			$dest_name= $self->_path_for_hash($dest_hash);
-		}
-		
-		if (-f $dest_name) {
-			# we already have it
-			unlink $temp_name;
+	# Read chunks of the stream, and either hash or save them or both.
+	my $buf;
+	my $is_real_fd= (fileno($fh) >= 0);
+	binmode $fh;
+	while(1) {
+		my $got= $is_real_fd? sysread($fh, $buf, $self->copy_buffer_size) : read($fh, $buf, $self->copy_buffer_size);
+		if ($got) {
+			# hash it (maybe)
+			$digest->add($buf) unless defined $dest_hash;
+			# then write to temp file (maybe)
+			_write_all_or_die($temp_file, $buf) if $need_copy;
+		} elsif (!defined $got) {
+			next if ($!{EINTR} || $!{EAGAIN});
+			croak "while reading input: $!";
 		} else {
-			# move it into place
-			# we check for missing directories after the first failure,
-			#   in the spirit of keeping the common case fast.
-			$flags->{dry_run}
-				or rename($temp_name, $dest_name)
-				or ($self->_add_missing_path($dest_hash) and rename($temp_name, $dest_name))
-				or croak "rename(-> $dest_name): $!";
-			# record that we added a new hash, if stats enabled.
-			if ($flags->{stats}) {
-				$flags->{stats}{new_file_count}++;
-				push @{ $flags->{stats}{new_files} ||= [] }, $dest_hash;
-			}
+			last;
 		}
 	}
-	finally {
-		close $dest_fh if defined $dest_fh;
-		unlink $temp_name if defined $temp_name;
-	};
+
+	close $temp_file
+		or croak "while saving '$temp_file': $!";
+
+	unless (defined $dest_hash) {
+		$dest_hash= $digest->hexdigest;
+		$dest_name= $self->_path_for_hash($dest_hash);
+	}
+	
+	# Only if we don't have it yet
+	unless (-f $dest_name) {
+		# move it into place
+		# we check for missing directories after the first failure,
+		#   in the spirit of keeping the common case fast.
+		$flags->{dry_run}
+			or rename($temp_file, $dest_name)
+			or ($self->_add_missing_path($dest_hash) and rename($temp_file, $dest_name))
+			or croak "rename($temp_file => $dest_name): $!";
+		# record that we added a new hash, if stats enabled.
+		if ($flags->{stats}) {
+			$flags->{stats}{new_file_count}++;
+			push @{ $flags->{stats}{new_files} ||= [] }, $dest_hash;
+		}
+	}
 
 	return $dest_hash;
 }
@@ -464,19 +481,23 @@ sub file_open {
 	return $fh;
 }
 
+# This can be called as class or instance method.
+# When called as an instance method, '$digest_name' is mandatory,
+#   otherwise it is unneeded.
 sub _new_digest {
-	Digest->new((shift)->digest);
+	my ($self, $digest_name)= @_;
+	Digest->new($digest_name || $self->digest);
 }
 
 sub _path_for_hash {
 	my ($self, $hash)= @_;
-	return catfile($self->path, ($hash =~ $self->directory_fanout_regex));
+	return catfile($self->path, ($hash =~ $self->_fanout_regex));
 }
 
 sub _add_missing_path {
 	my ($self, $hash)= @_;
 	my $str= $self->path;
-	my @parts= ($hash =~ $self->directory_fanout_regex);
+	my @parts= ($hash =~ $self->_fanout_regex);
 	pop @parts; # discard filename
 	for (@parts) {
 		$str= catdir($str, $_);
