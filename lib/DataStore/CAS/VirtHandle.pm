@@ -4,26 +4,17 @@ use warnings;
 
 =head1 NAME
 
-File::CAS::File - File accessor object
+DataStore::CAS::File - File accessor object
 
 =head1 DESCRIPTION
 
-This class gives you access to the files (or more generically,
-blobs of data, including serialized directories) within a
-File::CAS store.
+These objects implement a user-friendly buffering layer on top of the store's
+_file_sysread and _file_sysseek methods.  This buffering mechanism doesn't
+exactly match the API of IO::Handle, but there is a method "->handle" which
+returns a tied file handle that does.
 
-It provides a number of methods for performing buffered reads
-on the data, and even has a ->handle method which gives you
-a fancy virtual filehandle for when you don't want to pull the
-entire blob into memory as a scalar.
-
-The file object will *only* have directory entry metadata (like
-name, timestamp, permissions) if you passed the "dirMeta"
-attribute to the constructor, or if you used a convenience
-method that did it for you.  This is because many logical files
-might have the same contents, so the only way to know which
-logical path you are dealing with is to have followed that path
-from the root directory.
+If you wish to bypass the buffering mechanism, you can use "->sysread" and
+"->sysseek", but be careful not to mix those calls with buffered ones.
 
 =cut
 
@@ -31,7 +22,7 @@ use Carp;
 use Scalar::Util 'weaken';
 use Symbol;
 
-our @CARP_NOT= ('File::CAS::File', 'File::CAS::File::Handle');
+our @CARP_NOT= ('DataStore::CAS::File', 'DataStore::CAS::File::Handle');
 
 =head1 ATTRIBUTES
 
@@ -41,34 +32,23 @@ The "store" object of the CAS which this file is located in.
 
 =head2 hash (mandatory, read-only)
 
-The checksum 'hash' value of the data, which is used as the key in the store.
+The store's digest's 'hash' value of the data in this file.
 
 =head2 size (mandatory, read-only)
 
-The size, in bytes, of the hashed data.
+The size, in bytes, of the file's data.
 
-This must always be known for every stored file.  It will be available
-even if directory metadata is not known.
+This must always be known for every stored file.
 
-=head2 dirMeta (optional, read-write)
-
-A DirEntry object describing this file as it relates to some directory
-listing.  This is merely for convenience in user programs, and has no
-real attachment to the file itself.
-
-=head2 name (optional, alias, read-only)
-
-Shortcut to dirMeta->name, if and only if dirMeta is not null.
-
-=head2 bufPos (read-only)
+=head2 buf_pos (read-only)
 
 A number from [0..size]  Defaults to 0.  This is the current position
 of the File's stream.
 
-=head2 bufEnd (read-only)
+=head2 buf_end (read-only)
 
 A number from [0..size]  Defaults to 0.  This is the position beyond the
-last character int he buffer.
+last character in the buffer.
 
 =head2 buffer (read-only reference, but modifiable with substr())
 
@@ -76,14 +56,14 @@ Direct access to the buffer.  Use this to scan the buffer for text you
 are interested in extracting.
 
 If you change the length of the buffer (not entirely recommended),
-"bufPos" will be affected, but "bufEnd" remains consistent.  This preserves
-the relation between "bufPos", "bufEnd", "eof" and "size", but beware that
-you might not seek to where you expected if you use bufPos in your
-calculation.
+"buf_pos" will be affected, but "buf_end" remains consistent.
+This preserves the relation between "buf_pos", "buf_end", "eof" and "size",
+but beware that you might not seek to where you expected if you use buf_pos
+in your calculation.
 
-=head2 bufAvail (read-only)
+=head2 buf_avail (read-only)
 
-The length of the buffer.  Alias for length($file->buffer)
+The number of available bytes in the buffer, beyond buf_pos.
 
 =cut
 
@@ -91,19 +71,16 @@ sub store { $_[0]{store} }
 sub hash { $_[0]{hash} }
 sub size { $_[0]{size} }
 
-sub dirMeta { $_[0]{dirMeta} }
-sub name { $_[0]->dirMeta && $_[0]->dirMeta->name }
-
-sub bufPos { $_[0]{bufEnd}-length($_[0]{buffer}); }
-sub bufEnd { $_[0]{bufEnd}; }
+sub buf_pos { $_[0]{buf_end}-length($_[0]{buffer}); }
+sub buf_end { $_[0]{buf_end}; }
 sub buffer { $_[0]{buffer}; }
-sub bufAvail { length($_[0]{buffer}) }
+sub buf_avail { length($_[0]{buffer}) }
 
 =head1 METHODS
 
 =head2 $class->_ctor( \%parameters )
 
-"_ctor" (constructor) is used as a more prive and more restricted
+"_ctor" (constructor) is used as a more private and more restricted
 version of "new".  It requires a hashref, which it will directly
 bless, with minimal error checking.
 
@@ -115,14 +92,14 @@ Mandatory parameters are:
 Any custom parameters used by subclasses or stores should begin
 with underscore.
 
-See Store::Simple for an example.
+See DataStore::CAS::Simple for an example.
 
 =cut
 sub _ctor {
 	my ($class, $p)= @_;
 	defined $p->{$_} or die "Missing required attribute: $_"
 		for qw: store hash size :;
-	$p->{bufEnd}= 0;
+	$p->{buf_end}= 0;
 	$p->{buffer}= '';
 	bless $p, $class;
 }
@@ -199,10 +176,10 @@ sub growBuffer {
 	# This check is purely for validation of the store.
 	# If the OS tells us the file has ended normally, and the store tells us
 	#  that it should be longer, we die loudly.
-	die "Error: Unexpected end of file in store data! (eof_pos=$_[0]{bufEnd}, size=$_[0]{size}, hash=$_[0]{hash})\n"
-		if $got == 0 && $_[0]{bufEnd} ne $_[0]{size};
+	die "Error: Unexpected end of file in store data! (eof_pos=$_[0]{buf_end}, size=$_[0]{size}, hash=$_[0]{hash})\n"
+		if $got == 0 && $_[0]{buf_end} ne $_[0]{size};
 	
-	$_[0]{bufEnd}+= $got;
+	$_[0]{buf_end}+= $got;
 	$got;
 }
 
@@ -233,10 +210,10 @@ sub skip { $_[0]->seek($_[1], 1) }
 
 Gets the current position of the stream.
 
-Alias for $file->bufPos
+Alias for $file->buf_pos
 
 =cut
-*tell = *bufPos;
+*tell = *buf_pos;
 
 =head2 $file->seek( $offset, $whence )
 
@@ -250,31 +227,31 @@ sub seek {
 	my ($self, $ofs, $whence)= @_;
 	$whence ||= 0;
 	$ofs ||= 0;
-	$ofs += $self->bufPos if $whence == 1;
+	$ofs += $self->buf_pos if $whence == 1;
 	$ofs += $self->{size} if $whence == 2;
-	if ($ofs >= $self->bufPos && $ofs <= $self->{bufEnd}) {
+	if ($ofs >= $self->buf_pos && $ofs <= $self->{buf_end}) {
 		# no need to actually seek.  We just discard some buffer.
-		substr($self->{buffer}, 0, $ofs - $self->bufPos)= '';
+		substr($self->{buffer}, 0, $ofs - $self->buf_pos)= '';
 	} else {
 		# moving beyond buffer.  Discard it and move the actual file position
 		$self->{buffer}= '';
 		$ofs= $self->{store}->seekFile($self, $ofs, 0)
 			or return undef;
-		$self->{bufEnd}= $ofs;
+		$self->{buf_end}= $ofs;
 	}
 	$ofs || '0 but true';
 }
 
 =head2 $file->eof
 
-Returns true if the current position (->bufPos) is at the end of the file.
+Returns true if the current position (->buf_pos) is at the end of the file.
 Note that the file may already have been fully read into the buffer, but
 eof will not be true until all the data is removed from the buffer.
 (using read or readall or skip or seek)
 
 =cut
 sub eof {
-	$_[0]{bufEnd} >= $_[0]{size} && !length($_[0]{buffer});
+	$_[0]{buf_end} >= $_[0]{size} && !length($_[0]{buffer});
 }
 
 =head2 $file->close
@@ -289,7 +266,7 @@ at position 0; you never need to explicitly open a File object.
 sub close {
 	$_[0]{store}->closeFile(@_);
 	$_[0]{buffer}= '';
-	$_[0]{bufEnd}= 0;
+	$_[0]{buf_end}= 0;
 }
 
 =head2 $file->read( $buffer, $count, $optionalOffset )
@@ -334,7 +311,7 @@ sub read {
 	
 	# else we pull it from the store
 	my $got= $self->{store}->readFile($self, $_[1], $count, $ofs||0);
-	$self->{bufEnd}+= $got if $got;
+	$self->{buf_end}+= $got if $got;
 	return $got;
 }
 
@@ -408,7 +385,7 @@ sub readline {
 
 =head2 $file->slurp
 
-Returns the entire contents of th file as a scalar.
+Returns the entire contents of the file as a scalar.
 
 This is a more convenient method of doing
 

@@ -1,20 +1,19 @@
-package File::CAS::Dir::Minimal;
-
+package DataStore::CAS::FS::Dir::Minimal;
 use 5.006;
 use strict;
 use warnings;
+use Carp;
+use Try::Tiny;
+
+use parent 'DataStore::CAS::FS::Dir';
+
+__PACKAGE__->RegisterFormat(Minimal => __PACKAGE__);
+
+our $VERSION= 1.0000;
 
 =head1 NAME
 
-File::CAS::Dir::Minimal - Directory representation with minimal metadata
-
-=head1 VERSION
-
-Version 1.0000
-
-=cut
-
-our $VERSION= 1.0000;
+DataStore::CAS::FS::Dir::Minimal - Directory representation with minimal metadata
 
 =head1 SYNOPSIS
 
@@ -26,15 +25,7 @@ want in a backup.
 
 =head1 ATTRIBUTES
 
-Inherits from L<File::CAS::Dir>
-
-=cut
-
-use Carp;
-use File::CAS::Dir;
-use parent 'File::CAS::Dir';
-
-__PACKAGE__->RegisterFormat(__PACKAGE__, __PACKAGE__);
+Inherits from L<DataStore::CAS::FS::Dir::Minimal>
 
 =head1 FACTORY FUNCTIONS
 
@@ -62,11 +53,11 @@ otherwise doesn't break anything)
 
 our %_TypeToCode= ( file => 'f', dir => 'd', symlink => 'l', chardev => 'c', blockdev => 'b', pipe => 'p', socket => 's' );
 our %_CodeToType= map { $_TypeToCode{$_} => $_ } keys %_TypeToCode;
-our %_ValFieldForType= ( f => 'hash', d => 'hash', l => 'linkTarget', c => 'device', b => 'device', p => '', s => '' );
+our %_ValFieldForType= ( f => 'hash', d => 'hash', l => 'symlink', c => 'device', b => 'device', p => '', s => '' );
 sub SerializeEntries {
 	my ($class, $entryList, $metadata)= @_;
 	
-	my $ret= "CAS_Dir 17 File::CAS::Dir::Minimal\n";
+	my $ret= "CAS_Dir 07 Minimal\n";
 	
 	for my $e (sort {$a->{name} cmp $b->{name}} @$entryList) {
 		my $code= $_TypeToCode{$e->{type}}
@@ -125,18 +116,16 @@ sub getEntry {
 	$_[0]->_entryHash->{$_[1]};
 }
 
-package File::CAS::Dir::Minimal::Entry;
+package DataStore::CAS::FS::Dir::Minimal::Entry;
 use strict;
 use warnings;
-
-use File::CAS::Dir;
-our @ISA=( 'File::CAS::Dir::Entry' );
+use parent 'DataStore::CAS::FS::Dir::Entry';
 
 sub type { $_CodeToType{$_[0][0]} }
 sub name { $_[0][1] }
 sub hash { ($_[0][0] eq 'f' || $_[0][0] eq 'd')? $_[0][2] : undef }
-sub linkTarget { $_[0][0] eq 'l'? $_[0][2] : undef }
+sub symlink { $_[0][0] eq 'l'? $_[0][2] : undef }
 sub device { ($_[0][0] eq 'b' || $_[0][0] eq 'c')? $_[0][2] : undef }
-sub asHash { return $_[0][3] ||= { map { defined ($_[0]->$_)? ($_ => $_[0]->$_) : () } qw: type name hash linkTarget device : } }
+sub as_hash { return $_[0][3] ||= { map { defined ($_[0]->$_)? ($_ => $_[0]->$_) : () } qw: type name hash symlink device : } }
 
 1;

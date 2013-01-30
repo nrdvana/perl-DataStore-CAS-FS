@@ -1,76 +1,68 @@
-package File::CAS::Dir;
-
-use 5.006;
+package DataStore::CAS::FS::Dir;
+use 5.008;
 use strict;
 use warnings;
+use Carp;
+use Try::Tiny;
+
+our $VERSION= 1.0000;
 
 =head1 NAME
 
-File::CAS::Dir - Object representing a directory of file entries,
+DataStore::CAS::FS::Dir - Object representing a directory of file entries,
 indexed by filename.
-
-=head1 VERSION
-
-Version 1.0000
-
-=cut
-
-our $VERSION= 1.0000;
 
 =head1 SYNOPSIS
 
 =head1 DESCRIPTION
 
-This class handles the job of packing or unpacking a directory listing
-to/from a stream of bytes.  Various subclasses exist, each supporting
-a different selection of metadata fields.  For instance, the
-File::CAS::Dir module itself only stores filename and content references
-(and a few other things like symlink targets and device file nodes)
+This class handles the job of packing or unpacking a directory listing to/from
+a stream of bytes.  This class can store any arbitrary metadata about a file,
+and encodes it with JSON.  Various subclasses exist which support more limited
+attributes and more efficient encoding.
+For instance, the DataStore::CAS::FS::Dir::Minimal module only stores filename
+and content references (and a few other things like symlink targets and device
+file nodes) and results in a very compact serialization.
 
-See the File::CAS::Dir::UnixStat if you want to store entire 'stat'
-entries for each file.  Eventually there will also be a
-File::CAS::Dir::UnixAttr if you want to store ACLs and Extended
-Attributes, a Dir::Fat32 for fat32, and a Dir::Windows for ACL-based
-windows permissions.
+See the DataStore::CAS::FS::Dir::Unix if you want to store bare 'stat' entries
+for each file.  Eventually there will also be a ::Dir::UnixAttr if you want to
+store ACLs and Extended Attributes, a ::Dir::DosFat for fat16/32, and a
+::Dir::Windows for ACL-based Windows permissions.
 
 *Every* module should support all known filesystem entity types.
 They only differ in which metadata they keep for that entry.
 
-Note that you cannot have a File::CAS::Dir object until it has been
-serialized and deserialized again.  All File::CAS::Dir objects are
-full constructed and immutable.
+Note that with the public API, you cannot instantiate DataStore::CAS::FS::Dir
+objects until they has been serialized and deserialized again. To do so, build
+a directory listing in the format returned by File::CAS::DirScan, and then
+serialize it using an appropriate Directory class's SerializeEntries() method.
 
-To create a new File::CAS::Dir, you must first build a directory
-listing in the format returned by File::CAS::DirScan, and then
-serialize it using an appropriate Directory class's SerializeEntries()
-method.
+All ::Dir objects are intended to be immutable.  They are also cached by
+DataStore::CAS::FS, so modifying them could cause problems.
 
 =head1 ATTRIBUTES
 
-=head2 file (read-only, required)
+=head2 file
 
-The file this directory was deserialized from.
+Read-only, Required.  The file this directory was deserialized from.
 
-=head2 store (alias)
+=head2 store
 
 Alias for file->store
 
-=head2 hash (alias)
+=head2 hash
 
 Alias for file->hash
 
-=head2 size (alias)
+=head2 size
 
 Alias for file->size
 
-=head2 name (alias)
+=head2 name
 
 Alias for file->name
 
 =cut
-
-use Carp;
-use Params::Validate ();
 
 sub file     { $_[0]{file} }
 sub store    { $_[0]{file}->store }
@@ -93,7 +85,7 @@ The only time they should be different is if you want to register
 an alternate decoder for a known encoding.
 
 =cut
-our %_Formats= ( 'File::CAS::Dir' => 'File::CAS::Dir' );
+our %_Formats= ( '' => __PACKAGE__ );
 sub RegisterFormat {
 	my ($class, $format, $decoderClass)= @_;
 	$decoderClass->isa($class)
@@ -101,9 +93,9 @@ sub RegisterFormat {
 	$_Formats{$format}= $decoderClass;
 }
 
-=head2 $class->new( $file<File::CAS::File> )
+=head2 $class->new( DataStore::CAS::File )
 
-This factory method reads the first few bytes of the File::CAS::File
+This factory method reads the first few bytes of the DataStore::CAS::File
 data to determine which type of object to create.
 
 That object might then read in the rest of the directory, or read
@@ -174,10 +166,10 @@ sub SerializeEntries {
 		if $metadata;
 	my $enc= _Encoder();
 	my $json= $enc->encode($metadata || {});
-	my $ret= "CAS_Dir 0E File::CAS::Dir\n"
+	my $ret= "CAS_Dir 00 \n"
 		."{\"metadata\":$json,\n"
 		." \"entries\":[\n";
-	$ret .= $enc->encode(ref $_ eq 'HASH'? $_ : $_->asHash).",\n"
+	$ret .= $enc->encode(ref $_ eq 'HASH'? $_ : $_->as_hash).",\n"
 		for sort {(ref $a eq 'HASH'? $a->{name} : $a->name) cmp (ref $b eq 'HASH'? $b->{name} : $b->name)} @$entryList;
 	substr($ret, -2)= "\n]}\n";
 	$ret;
@@ -258,10 +250,11 @@ use warnings;
 
 =head1 Dir::Entry
 
-File::CAS::Dir::Entry is a super-light-weight class.  More of an interface, really.
+DataStore::CAS::FS::Dir::Entry is a super-light-weight class.  More of an
+interface, really.
 
-It has no public constructor, and will be constructed by a File::CAS::Dir object
-or subclass.  The File::CAS::Dir::Entry interface contains the following read-only
+It has no public constructor, and will be constructed by a Dir object or
+subclass.  The Dir::Entry interface contains the following read-only
 accessors:
 
 =head1 Dir::Entry ACCESSORS
@@ -278,7 +271,10 @@ In other words, the name should always be platform-neutral.
 
 =head2 type
 
-One of "file", "dir", "symlink", "blockdev", "chardev", "pipe", "socket"
+One of "file", "dir", "symlink", "blockdev", "chardev", "pipe", "socket".
+Symlink refers only to UNIX style symlinks.  As support for symbolic links
+from other systems is added, new types specific to those systems will be
+added to this list.
 
 =head2 hash
 
@@ -299,7 +295,7 @@ The timestamp of the creation of the file, expressed in Unix Epoch seconds.
 
 The timestamp the file was last modified, expressed in Unix Epoch seconds.
 
-=head2 linkTarget
+=head2 symlink
 
 The target of a symbolic link, in platform-dependant path notation.
 
@@ -364,13 +360,13 @@ sub new {
 # We expect other subclasses to be based on different native objects, like arrays,
 #  so we have a special accessor that only takes effect if it is a hashref, and
 #  safely returns undef otherwise.
-{ eval "sub $_ { \$_[0]->asHash->{$_} }; 1" or die "$@"
-  for qw: name type hash size create_ts modify_ts linkTarget
+{ eval "sub $_ { \$_[0]->as_hash->{$_} }; 1" or die "$@"
+  for qw: name type hash size create_ts modify_ts symlink
 	unix_uid unix_user unix_gid unix_group unix_mode unix_atime unix_ctime unix_mtime unix_dev unix_inode unix_nlink unix_blocksize unix_blocks :;
 }
 
 sub createDate { require DateTime; DateTime->from_epoch( epoch => $_[0]->create_ts ) }
 sub modifyDate { require DateTime; DateTime->from_epoch( epoch => $_[0]->modify_ts ) }
-sub asHash { ${$_[0]} }
+sub as_hash { ${$_[0]} }
 
 1;

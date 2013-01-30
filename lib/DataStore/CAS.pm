@@ -5,9 +5,14 @@ use warnings;
 use Carp;
 use Try::Tiny;
 
+=head1 NAME
+
+DataStore::CAS - Abstract base class for Content Addressable Storage
+
 =head1 DESCRIPTION
 
-DataStore::CAS is an abstract base class for Content Addressable Storage.
+This module lays out a very straightforward API for Content Addressable
+Storage.
 
 Content Addressable Storage is a concept where a file is identified by a
 one-way message digest checksum of its content.  (usually called a "hash")
@@ -352,6 +357,28 @@ No flags are yet implemented, though $flags{stats} will be supported.
 =cut
 
 # sub delete
+
+=head2 iterator([ \%flags ])
+
+Iterate the contents of the CAS.  Returns a java-style iterator with two
+methods: 'next' and 'eof'.  
+('eof' seemed more appropriate to Perl than 'hasNext')
+Each call to 'next' returns a digest hash string, which you can use to
+'get' a file object.
+
+Flags:
+
+The only flag defined so far is 'prefix'.  You can use this to imitate
+Git's feature of identifying an object by a portion of its hash instead
+of having to paste the whole thing.  You will probably need more digits
+though, because you're searching the whole CAS, and not just commit
+entries.
+
+=cut
+
+sub iterator {
+	die "TODO: Implement me"
+}
 
 =head2 file_open( $file [, \%flags ])
 

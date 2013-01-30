@@ -38,10 +38,9 @@ for those features.
 
 =cut
 
-use Digest;
+use Digest ();
 use File::Spec::Functions 'catfile', 'catdir', 'canonpath';
-use File::Copy;
-use File::Temp 'tempfile';
+use File::Temp ();
 
 =head1 ATTRIBUTES
 
