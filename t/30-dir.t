@@ -41,7 +41,15 @@ is( Digest->new('SHA-1')->add($ser)->hexdigest(), $hashOfSerialized, 'test dir s
 	or diag $ser;
 
 $file= bless { hash => $hashOfSerialized, size => length($ser) }, 'DataStore::CAS::File';
-$dir= new_ok( 'DataStore::CAS::FS::Dir', [ file => $file, data => $ser ], 'test dir deserialized' );
+$dir= new_ok( 'DataStore::CAS::FS::Dir', [ file => $file, data => $ser ], 'test dir deserialized from scalar' );
+
+is_deeply( $dir->metadata, \%metadata, 'deserialized metadata are correct' )
+	or diag Dumper($dir->metadata);
+is_deeply( [ map { $_->as_hash } @{$dir->{_entries}} ], \@entries, 'deserialized entries are correct' )
+	or diag Dumper($dir->{_entries});
+
+ok( open( my $handle, '<', \$ser ), 'open memory stream' );
+$dir= new_ok( 'DataStore::CAS::FS::Dir', [ file => $file, handle => $handle ], 'test dir deserialized from handle' );
 
 is_deeply( $dir->metadata, \%metadata, 'deserialized metadata are correct' )
 	or diag Dumper($dir->metadata);

@@ -352,7 +352,7 @@ partial reads.
 =cut
 
 sub _readall {
-	my $got= read($_[1], $_[2], $_[3], $_[4]);
+	my $got= read($_[1], $_[2], $_[3], $_[4]||0);
 	return $got if defined $got and $got == $_[3];
 	my $count= $_[3];
 	while (1) {
