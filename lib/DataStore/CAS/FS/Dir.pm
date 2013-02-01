@@ -44,7 +44,8 @@ DataStore::CAS::FS, so modifying them could cause problems.
 
 =head2 file
 
-Read-only, Required.  The file this directory was deserialized from.
+Read-only, Required.  The DataStore::CAS::File this directory was deserialized
+from.
 
 =head2 store
 
@@ -58,9 +59,15 @@ Alias for file->hash
 
 Alias for file->size
 
-=head2 name
+=head2 format
 
-Alias for file->name
+The format string that identifies this directory encoding.
+
+=head2 metadata
+
+A hashref of arbitrary name/value pairs attached to the directory at the time
+it was written.  DO NOT MODIFY.  (In the future, this might be protected by
+Perl's internal const mechanism)
 
 =cut
 
@@ -69,74 +76,93 @@ sub store    { $_[0]{file}->store }
 sub hash     { $_[0]{file}->hash }
 sub size     { $_[0]{file}->size }
 
-sub name     { $_[0]{file}->name }
+sub format   { $_[0]{format} }
+
+sub metadata { $_[0]{metadata} } 
 
 =head1 FACTORY FUNCTIONS
 
-=head2 $class->RegisterFormat( $format => $dirClass )
+=head2 $class->RegisterFormat( $format => $dir_class )
 
-Registers a directory format for the File::CAS::Dir->new
-factory behavior.  (i.e. File::CAS::Dir->new auto-detects the
-format of a serialized directory, and creates an instance of
-an appropriate class.
+Registers a directory format to be available to the factory-like 'new' method
+of DataStore::CAS::FS::Dir.
 
-Typically the format is the same as the name of the $dirClass.
-The only time they should be different is if you want to register
-an alternate decoder for a known encoding.
+While the system could have been designed to auto-load classes on demand, that
+seemed like a bad idea because it would allow the contents of the CAS to load
+perl modules.  With this design, you mist load all modules you wish to enable
+before browsing the CAS.  All the directory modules in the standard
+distribution of DataStore::CAS are enabled by default.
+
+Typically the $format string is the same as the name of the $dir_class.
+Directory modules in DataStore::CAS::FS::Dir leave off that package prefix,
+so the empty string '' refers to DataStore::CAS::FS::Dir, and so on.
 
 =cut
 our %_Formats= ( '' => __PACKAGE__ );
 sub RegisterFormat {
-	my ($class, $format, $decoderClass)= @_;
-	$decoderClass->isa($class)
-		or croak "$decoderClass must inherit from $class";
-	$_Formats{$format}= $decoderClass;
+	my ($class, $format, $decoder_class)= @_;
+	$decoder_class->isa($class)
+		or croak "$decoder_class must inherit from $class";
+	$_Formats{$format}= $decoder_class;
 }
 
-=head2 $class->new( DataStore::CAS::File )
+=head2 $class->new( $file | \%params )
 
-This factory method reads the first few bytes of the DataStore::CAS::File
-data to determine which type of object to create.
+This factory method reads the first few bytes of $file (which must be an
+instance of DataStore::CAS::File) to determine which type of object to create.
 
-That object might then read in the rest of the directory, or read
-the entries on demand.
+The selected directory class's constructor will then be called.
+
+The method can be called with just the file, or with a hashref of parameters.
+
+Parameters:
+
+=over
+
+=item file
+
+The single $file is equivalent to "{ file => $file }".  It specifies the CAS
+item to read the serialized directory from.
+
+=item format
+
+If you know the format ahead of time, you may specify it to prevent new() from
+needing to read the $file.  (though most directory classes will immediately
+read it anyway)
+
+format must be one of the registered formats.  See RegisterFormat.
+
+=item handle
+
+If you already opened the file for some reason, you can let the directory
+re-use your handle.  Be warned that the directory will seek to the start of
+the file first.  Also beware that some directory implementations might hold
+onto the handle and seek around on it during calls to other methods.
+
+=item data
+
+If you already have the full data of the $file, you can pass it to prevent any
+filesystem activity.  You might choose this if you were trying to use the
+library in a non-blocking or event driven application.
+
+=back
 
 =cut
-our $_MagicNumber= 'CAS_Dir ';
-sub _headerLenForFormat {
-	my ($class, $format)= @_;
-	return length($_MagicNumber)+2+1+length($format)+1;
-}
-sub _readFormat {
-	my ($class, $file)= @_;
-	
-	$file->seek(0,0);
-	
-	# first 8 bytes are "CAS_Dir "
-	# Next 2 bytes are the length of the format in uppercase ascii hex (limiting format to 255 characters)
-	# The byte after that is a space character.
-	# There is a newline (\n) at the end of the format string which is not part of that count.
-	$file->readall(my $buf, length $_MagicNumber) eq $_MagicNumber
-		or croak "Bad magic number in directory ".$file->hash;
-	my $formatLen= hex $file->readall($buf, 2);
-	
-	$file->readall($buf, 1+$formatLen+1);
-	substr($buf, 0, 1) eq ' ' && substr($buf, -1, 1) eq "\n"
-		or croak "Invalid directory encoding in ".$file->hash;
-	return substr($buf, 1, -1);
-}
 
 sub new {
-	my ($class, $file)= @_;
-	# as a convenience, you may pass a null file, which creates a null directory.
-	return undef unless $file;
+	my $class= shift;
+	my %p= (@_ == 1)? ((ref $_[0] eq 'HASH')? %{$_[0]} : ( file => $_[0] )) : @_;
+
+	defined $p{file} or croak "Missing required attribute 'file'";
+	defined $p{format} or $p{format}= $class->_read_format(\%p);
+
 	# Once we get the name of the format, we can jump over to the constructor
 	# for the appropriate class
-	my $format= $class->_readFormat($file);
-	defined $_Formats{$format}
-		or croak "Unknown directory format '$format' in ".$file->hash."\n(be sure to load relevant modules)";
-	
-	$_Formats{$format}->_ctor({ file => $file, format => $format });
+	$class= $_Formats{$p{format}}
+		or croak "Unknown directory format '$p{format}' in ".$p{file}->hash
+			."\n(be sure to load relevant modules)";
+
+	$_Formats{$p{format}}->_ctor(\%p);
 }
 
 =head1 METHODS
@@ -171,80 +197,179 @@ sub SerializeEntries {
 		." \"entries\":[\n";
 	$ret .= $enc->encode(ref $_ eq 'HASH'? $_ : $_->as_hash).",\n"
 		for sort {(ref $a eq 'HASH'? $a->{name} : $a->name) cmp (ref $b eq 'HASH'? $b->{name} : $b->name)} @$entryList;
-	substr($ret, -2)= "\n]}\n";
-	$ret;
+	substr($ret, -2)= "\n" if (@$entryList);
+	return $ret."]}\n";
 }
+
+=head2 $dir->iterator
+
+Returns an iterator object with methods of '->next' and '->eof'.
+
+Calling 'next' returns a Dir::Entry object, or undef if at the end of the
+directory.  Entries are not guaranteed to be in any order, or even to be
+unique names.  (in particular, because of case sensitivity rules)
+
+=cut
+
+sub iterator {
+	return DataStore::CAS::FS::Dir::EntryIter->new($_[0]);
+}
+
+=head2 $ent= $dir->get_entry($name)
+
+Get a directory entry by name.  The name is case-sensitive.
+(Expect to see a second parameter '\%flags' sometime in the future)
+
+=cut
+sub get_entry {
+	return (
+		($_[0]{_entry_name_map} ||= { map { $_->name => $_ } $_[0]{_entries} })
+			->{$_[1]}
+	);
+}
+
+=head1 IMPLEMENTATION NOTES
+
+Subclasses have the following handy private functions to work with:
 
 =head2 $class->_ctor( \%params )
 
-Private-ish constructor.  Like "new" with no error checking, and requires a blessable hashref.
+Private-ish constructor.  Like "new" with no error checking, and requires a
+blessable hashref.
 
-Required parameters are "file" and "format".  Format must be the type encoded in the file, or
-deserialization will fail.
+Required parameters are "file" and "format".  Format must be the type encoded
+in the file, or deserialization will fail.
+
+The factory method Dir::new() will usually pass a "handle" or "data" as well.
+"data" is the complete data of the file, and if present should eliminate the
+need to open the file.  "handle" is an open file handle to the data of the
+file, and should be used if provided.  If neither is given, call file->open
+to get a handle to work with.
 
 =cut
 sub _ctor {
 	my ($class, $params)= @_;
 	require JSON;
+
+	my $handle= delete $params->{handle};
+	my $bytes= delete $params->{data};
 	my $self= bless $params, $class;
-	
-	$self->file->seek($class->_headerLenForFormat($params->{format}));
-	my $json= $self->file->slurp;
-	my $data= _Encoder()->decode($json);
-	$self->{_entries}= $data->{entries} or croak "Directory data is missing 'entries'";
-	$_= File::CAS::Dir::Entry->new($_) for @{$self->{_entries}};
-	$self->{_metadata}= $data->{metadata} or croak "Directory data is missing 'metadata'";
+
+	# This implementation just processes the file as a whole.
+	# Read it in if we don't have it yet.
+	my $header_len= $class->_calc_header_length($params->{format});
+	if (defined $bytes) {
+		substr($bytes, 0, $header_len)= '';
+	}
+	else {
+		defined $handle or $handle= $params->{file}->open;
+		seek($handle, $header_len, 0) or croak "seek: $!";
+		local $/= undef;
+		$bytes= <$handle>;
+	}
+
+	my $data= _Encoder()->decode($bytes);
+	$self->{metadata}= $data->{metadata} or croak "Directory data is missing 'metadata'";
+	$data->{entries} or croak "Directory data is missing 'entries'";
+	$self->{_entries}= [
+		map { DataStore::CAS::FS::Dir::Entry->new($_) }
+			@{$data->{entries}}
+	];
 	$self;
 }
 
-=head2 $dir->find(@path)
+=head2 $class->_magic_number
 
-Find a dir entry for the specified path.  If the path does not exist, returns undef.
+Returns a string that all serialized directories start with.
+This is a constant and should never change.
 
-Throws exceptions if it encounters invalid directories, or has read errors.
-All other failures cause an early "return undef".
+=head2 $class->_calc_header_length( $format )
+
+The header length is directly determined by the format string.
+This method returns the header length in bytes.  A directory's encoded data
+begins at this offset.
 
 =cut
-sub find {
-	my ($self, $name, @path)= @_;
-	if (@path) {
-		my $subdir= $self->subdir($name)
-			or return undef;
-		return $subdir->find(@path);
+
+my $_MagicNumber= 'CAS_Dir ';
+
+sub _magic_number { $_MagicNumber }
+
+sub _calc_header_length {
+	my ($class, $format)= @_;
+	# Length of sprintf("CAS_Dir %02X %s\n", length($format), $format)
+	return length($format)+length($_MagicNumber)+4;
+}
+
+=head2 $class->_read_format( \%params )
+
+This method inspects the first few bytes of $params->{file} to read the format
+string, which it returns.  It first uses $params->{data} if available, or
+$params->{handle}, or if neither is available it opens a new handle to the
+file which it returns in $params.
+
+=cut
+
+sub _read_format {
+	my ($class, $params)= @_;
+
+	# The caller is allowed to pre-load the data so that we don't need to read it here.
+	my $buf= $params->{data};
+	# If they didn't, we need to load it.
+	if (!defined $params->{data}) {
+		$params->{handle}= $params->{file}->open
+			unless defined $params->{handle};
+		seek($params->{handle}, 0, 0) or croak "seek: $!";
+		$class->_readall($params->{handle}, $buf, length($_MagicNumber)+2);
 	}
-	$self->getEntry($name);
+
+	# first 8 bytes are "CAS_Dir "
+	# Next 2 bytes are the length of the format in uppercase ascii hex (limiting format id to 255 characters)
+	substr($buf, 0, length($_MagicNumber)) eq $_MagicNumber
+		or croak "Bad magic number in directory ".$params->{file}->hash;
+	my $format_len= hex substr($buf, length($_MagicNumber), 2);
+
+	# Now we know how many additional bytes we need
+	if (!defined $params->{data}) {
+		$class->_readall($params->{handle}, $buf, 1+$format_len+1, length($buf));
+	}
+
+	# The byte after that is a space character.
+	# The format id string follows, in exactly $format_len bytes
+	# There is a newline (\n) at the end of the format string which is not part of that count.
+	substr($buf, length($_MagicNumber)+2, 1) eq ' '
+		and substr($buf, length($_MagicNumber)+3+$format_len, 1) eq "\n"
+		or croak "Invalid directory encoding in ".$params->{file}->hash;
+	return substr($buf, length($_MagicNumber)+3, $format_len);
 }
 
-sub getEntries { @{$_[0]{_entries}} }
+=head2 $class->_readall( $handle, $buf, $count, $offset )
 
-=head2 $ent= $dir->getEntry($name)
-
-Get a directory entry by name.
+A small wrapper around 'read()' which croaks if it can't read the full
+requested number of bytes, and properly handles EINTR and EAGAIN and
+partial reads.
 
 =cut
-sub _entryHash {
-	$_[0]{_entryHash} ||= { map { $_->name => $_ } $_[0]->getEntries };
-}
-sub getEntry {
-	return $_[0]->_entryHash->{$_[1]};
-}
 
-=head2 $dir2= $dir->subdir($name)
-
-Like getEntry, this finds an entry, but it also expands that entry into
-a File::CAS::Dir object.
-
-=cut
-sub subdir {
-	my ($self, $name)= @_;
-	my $entry= $self->getEntry($name)
-		or return undef;
-	($entry->type eq 'dir' && defined $entry->hash)
-		or return undef;
-	return File::CAS::Dir->new($self->file->store->get($entry->hash));
+sub _readall {
+	my $got= read($_[1], $_[2], $_[3], $_[4]);
+	return $got if defined $got and $got == $_[3];
+	my $count= $_[3];
+	while (1) {
+		if (defined $got) {
+			croak "unexpected EOF"
+				unless $got > 0;
+			$count -= $got;
+		}
+		else {
+			croak "read: $!"
+				unless $!{EINTR} || $!{EAGAIN};
+		}
+		$got= read($_[1], $_[2], $count, length $_[2]);
+	}
 }
 
-package File::CAS::Dir::Entry;
+package DataStore::CAS::FS::Dir::Entry;
 use strict;
 use warnings;
 
@@ -272,9 +397,11 @@ In other words, the name should always be platform-neutral.
 =head2 type
 
 One of "file", "dir", "symlink", "blockdev", "chardev", "pipe", "socket".
-Symlink refers only to UNIX style symlinks.  As support for symbolic links
-from other systems is added, new types specific to those systems will be
-added to this list.
+
+Note that 'symlink' refers only to UNIX style symlinks.
+As support for other systems' symbolic links is added, new type strings will
+be added to this list, and the type will determine how to interpret the
+path_ref value.
 
 =head2 hash
 
@@ -295,9 +422,11 @@ The timestamp of the creation of the file, expressed in Unix Epoch seconds.
 
 The timestamp the file was last modified, expressed in Unix Epoch seconds.
 
-=head2 symlink
+=head2 path_ref
 
-The target of a symbolic link, in platform-dependant path notation.
+The target of a symbolic link, in a notation that is interpreted based on the
+'type' of the link.  UNIX symlinks are always interpreted as path elements
+separated by '/' and absolute paths represented by a leading '/'.
 
 =head2 unix_uid
 
@@ -351,22 +480,83 @@ The block count reported by lstat.
 
 use Scalar::Util 'reftype';
 
+=head1 Dir::Entry METHODS
+
+=head2 new(\%hash)
+
+The default constructor *uses* the hashref you pass to it. (it does not clone)
+This should be ok, because the Dir::Entry objects should never be modified.
+We don't yet enforce that though, so be careful what you pass to it.
+
+=cut
+
 sub new {
 	my $class= shift;
-	my $hash= (scalar(@_) eq 1 && ref $_[0])? $_[0] : { @_ };
+	my $hash= (scalar(@_) eq 1 && ref $_[0] eq 'HASH')? $_[0] : { @_ };
 	bless \$hash, $class;
 }
 
-# We expect other subclasses to be based on different native objects, like arrays,
-#  so we have a special accessor that only takes effect if it is a hashref, and
-#  safely returns undef otherwise.
-{ eval "sub $_ { \$_[0]->as_hash->{$_} }; 1" or die "$@"
-  for qw: name type hash size create_ts modify_ts symlink
-	unix_uid unix_user unix_gid unix_group unix_mode unix_atime unix_ctime unix_mtime unix_dev unix_inode unix_nlink unix_blocksize unix_blocks :;
+# We expect other subclasses to be based on different native objects, like
+#  arrays, so our accessor pulls from the 'as_hash' so that it can safely
+#  return undef if the subclass doesn't support it.
+{ eval "sub $_ { \$_[0]->as_hash->{$_} }; 1" or die $@
+  for qw: name type hash size create_ts modify_ts path_ref
+	unix_uid unix_user unix_gid unix_group unix_mode unix_atime unix_ctime
+	unix_mtime unix_dev unix_inode unix_nlink unix_blocksize unix_blocks :;
 }
 
-sub createDate { require DateTime; DateTime->from_epoch( epoch => $_[0]->create_ts ) }
-sub modifyDate { require DateTime; DateTime->from_epoch( epoch => $_[0]->modify_ts ) }
+=head2 create_date
+
+Convenience method.  Creates a DateTime object from the create_ts field.
+Returns undef if create_ts is undef.
+
+=head2 modify_date
+
+Convenience method.  Creates a DateTime object from the modify_ts field.
+Returns undef if modify_ts is undef.
+
+=cut
+
+sub create_date {
+	require DateTime;
+	return defined $_[0]->create_ts?
+		DateTime->from_epoch( epoch => $_[0]->create_ts )
+		: undef
+}
+sub modify_date {
+	require DateTime;
+	return defined $_[0]->modify_ts?
+		DateTime->from_epoch( epoch => $_[0]->modify_ts )
+		: undef
+}
+
+=head2 as_hash
+
+Returns the fields of the directory entry as a hashref.  The hashref will
+contain only the public fields.  The hashref SHOULD NEVER BE MODIFIED.
+(Future versions might use perl's internals to force the hashref to be
+constant)
+
+=cut
+
 sub as_hash { ${$_[0]} }
+
+package DataStore::CAS::FS::Dir::EntryIter;
+use strict;
+use warnings;
+
+sub new {
+	bless { dir => $_[1], i => 0, n => scalar( @{$_[1]->_entries} ) }, $_[0];
+}
+
+sub next {
+	return $_[0]{dir}->_entries->[ $_[0]{i}++ ]
+		if $_[0]{i} < $_[0]{n};
+	return undef;
+}
+
+sub eof {
+	return $_[0]{i} >= $_[0]{n};
+}
 
 1;
