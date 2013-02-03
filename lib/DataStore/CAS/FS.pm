@@ -219,61 +219,6 @@ sub new {
 	$class->_ctor(\%p);
 }
 
-# Dynamically load a class if needed, and check its version.
-# We test whether a class is loaded with the '->new' method,
-#  because every class that we dynamically load is an object.
-sub _require_class {
-	my ($pkg, $version)= @_;
-
-	# We're loading user-supplied class names.  Protect against code injection.
-	($pkg =~ /^[A-Za-z][A-Za-z0-9_]*(::[A-Za-z][A-Za-z0-9_]*)*$/)
-		or croak "Invalid perl package name: '$pkg'\n";
-
-	unless ($pkg->can('new')) {
-		my ($fail, $err)= do {
-			local $@;
-			((not eval "require $pkg;"), $@);
-		};
-		die $err if $fail;
-	}
-	
-	if (defined $version) {
-		defined *{$pkg.'::VERSION'}
-			or croak "Package '$pkg' is missing a VERSION\n";
-		no strict 'refs';
-		my $v= ${$pkg.'::VERSION'};
-		($v >= $version)
-			or croak "Package '$pkg' version '$v' is less than required '$version'\n";
-	}
-	
-	1;
-}
-
-our @_ctor_params= qw: scanner store :;
-sub _ctor_params { @_ctor_params }
-
-sub _ctor {
-	my ($class, $params)= @_;
-	my $p= { map { $_ => delete $params->{$_} } @_ctor_params };
-
-	# die on leftovers
-	croak "Invalid parameter: ".join(', ', keys %$params)
-		if (keys %$params);
-
-	# Validate our sub-objects
-	defined $p->{store} and $p->{store}->isa('DataStore::CAS')
-		or croak "Missing/invalid parameter 'store'";
-	defined $p->{scanner} and $p->{scanner}->isa('DataStore::CAS::FS::Scanner')
-		or croak "Missing/invalid parameter 'scanner'";
-
-	# Pick suitable defaults for the dircache
-	$p->{_dircache}= {};
-	$p->{_dircache_recent}= [];
-	$p->{_dircache_recent_idx}= 0;
-	$p->{_dircache_recent_mask}= 63;
-	bless $p, $class;
-}
-
 =head2 get( $hash [, \%flags ])
 
 This passes through to DataStore::CAS, which looks up the hash and either
@@ -309,7 +254,7 @@ sub get_dir {
 	my ($self, $hash, $flags)= @_;
 	my $dircache= $self->{_dircache};
 	my $dir= $dircache->{$hash};
-	unless (defined $ret) {
+	unless (defined $dir) {
 		my $file= $self->get($hash) or return undef;
 		$dir= DataStore::CAS::FS::Dir->new($file);
 		Scalar::Util::weaken($dircache->{$hash}= $dir);
@@ -354,6 +299,25 @@ sub put {
 	}
 	(shift)->{store}->put(@_);
 }
+
+=head2 put_scalar
+
+Alias for store->put_scalar
+
+=head2 put_file
+
+Alias for store->put_file
+
+=head2 put_handle
+
+Alias for store->put_handle
+
+=head2 validate
+
+Alias for store->validate
+
+=cut
+
 sub put_scalar { (shift)->{store}->put_scalar(@_) }
 sub put_file   { (shift)->{store}->put_file(@_) }
 sub put_handle { (shift)->{store}->put_handle(@_) }
@@ -440,7 +404,7 @@ sub resolve_path_or_die {
 	croak $ret;
 }
 
-sub _resolvePath {
+sub _resolve_path {
 	my ($self, $root_entry, $path, $createMissing)= @_;
 
 	my @path= ref($path)? @$path : File::Spec->splitdir($path);
@@ -453,23 +417,22 @@ sub _resolvePath {
 		my $ent= $dirents[-1];
 		my $dir;
 
+		# Support for "symlink" is always UNIX-based (or compatible)
+		# As support for other systems' symbolic paths are added, they
+		# will be given unique '->type' values, and appropriate handling.
 		if ($ent->type eq 'symlink') {
 			# Sanity check on symlink entry
-			my $target= $ent->symlink;
+			my $target= $ent->path_ref;
 			defined $target and length $target
 				or return 'Invalid symbolic link "'.$ent->name.'"';
-			
-			# Resolve the path in the link before continuing on the remainder of the current path
-			# TODO: File::Spec is not quite correct here, since the link could be from a
-			#   foreign system. Need to come up with a way to interpret the link in terms
-			#   of the system that it came from.
-			unshift @path, File::Spec->splitdir($target);
+
+			unshift @path, grep { length } split('/', $target);
 			pop @dirents;
 			
 			# If an absolute link, we start over from the root
 			@dirents= ( $root_entry )
-				if File::Spec->file_name_is_absolute($target);
-			
+				if substr($target,0,1) eq '/';
+
 			next;
 		}
 
@@ -516,6 +479,186 @@ sub _resolvePath {
 	\@dirents;
 }
 
+=head1 EXTENDING
+
+=head2 Constructor
+
+The constructor of DataStore::CAS::FS is slightly non-standard.  The method
+'new()' is in charge of coercing parameters into a single hashref, which it
+then passes to a private method '_ctor(\%params)'.
+
+_ctor(\%params) is the actual constructor.  It should remove all the
+parameters it knows about from the hashref, and then call the parent
+constructor.  It should then apply its extracted parameters to the $self
+object returned by the parent class.  This allows subclasses to change
+the arguments that the superclass sees, and to catch invalid arguments.
+
+=cut
+
+our @_ctor_params= qw: scanner store :;
+sub _ctor_params { @_ctor_params }
+
+sub _ctor {
+	my ($class, $params)= @_;
+	my $p= { map { $_ => delete $params->{$_} } @_ctor_params };
+
+	# die on leftovers
+	croak "Invalid parameter: ".join(', ', keys %$params)
+		if (keys %$params);
+
+	# Validate our sub-objects
+	defined $p->{store} and $p->{store}->isa('DataStore::CAS')
+		or croak "Missing/invalid parameter 'store'";
+	defined $p->{scanner} and $p->{scanner}->isa('DataStore::CAS::FS::Scanner')
+		or croak "Missing/invalid parameter 'scanner'";
+
+	# Pick suitable defaults for the dircache
+	$p->{_dircache}= {};
+	$p->{_dircache_recent}= [];
+	$p->{_dircache_recent_idx}= 0;
+	$p->{_dircache_recent_mask}= 63;
+	bless $p, $class;
+}
+
+=head2 Utility functions
+
+=over
+
+=item _require_class( $pkg, $version )
+
+Dynamically load a class if needed, and check its version.
+We test whether a class is loaded with the '->new' method,
+because every class that we dynamically load is an object.
+
+=cut
+
+sub _require_class {
+	my ($pkg, $version)= @_;
+
+	# We're loading user-supplied class names.  Protect against code injection.
+	($pkg =~ /^[A-Za-z][A-Za-z0-9_]*(::[A-Za-z][A-Za-z0-9_]*)*$/)
+		or croak "Invalid perl package name: '$pkg'\n";
+
+	unless ($pkg->can('new')) {
+		my ($fail, $err)= do {
+			local $@;
+			((not eval "require $pkg;"), $@);
+		};
+		die $err if $fail;
+	}
+	
+	if (defined $version) {
+		defined *{$pkg.'::VERSION'}
+			or croak "Package '$pkg' is missing a VERSION\n";
+		no strict 'refs';
+		my $v= ${$pkg.'::VERSION'};
+		($v >= $version)
+			or croak "Package '$pkg' version '$v' is less than required '$version'\n";
+	}
+	
+	1;
+}
+
+1;
+
+__END__
+
+=head1 UNICODE vs. FILENAMES
+
+=head2 Background
+
+Unix operates on the philosophy that filenames are just bytes.  Much of Unix
+userspace operates on the philosophy that these bytes should probably be valid
+UTF-8 sequences (but of course, nothing enforces that).  Other operating
+systems, like modern Windows, operate on the idea that everything is Unicode
+and some backward-compatible APIs exist which can represent the Unicode as
+Latin1 or whatnot on a best-effort basis.  I think the "Unicode everywhere"
+philosophy is arguably a better way to go, but as this tool is primarily
+designed with Unix in mind, and it is intend for saving backups of real
+filesystems, it needs to be able to accurately store exactly what it find in
+the filesystem.  Essentially this means it neeeds to be *able* to store
+invalid UTF-8 sequences, -or- encode the octets as unicode codepoints up to
+0xFF and later know to then write them out to the filesystem as octets instead
+of UTF-8.
+
+=head2 Use Cases
+
+The primary concern is the user's experience when using this module.
+While Perl has decent support for Unicode, it requires all filenames to be
+strings of bytes. (i.e. strings with the unicode flag turned off)
+Any time you pass a unicode string to a Perl function like open() or rename(),
+perl converts it to a UTF-8 string of octets before performing the operation.
+This gives you the desired result in Unix.
+Unfortunately, Perl in Windows doesn't fare so well, because
+it uses Windows' non-unicode API.  Reading filenames with non-latin1
+characters returns garbage, and creating files with unicode strings containing
+non-latin1 characters creates garbled filenames.  To properly handle unicode
+outside of latin1 on Windows, you must avoid the Perl built-ins and tap
+directly into the wide-character Windows API.
+
+This creates a dilema: Should filenames be passed around the
+DataStore::CAS::FS API as unicode, or octets, or some auto-detecting mix?
+This dilema is further complicated because users of the library might not
+have read this section of documentation, and it would be nice if The Right
+Thing happened by default.
+
+Imagine a scenario where a user has a directory named C<"\xDC"> (U with an
+umlaut in latin-1) and another directory named C<"\xC3\x9C"> (U with an umlaut
+in UTF-8).  "readdir" will report these as the strings I've just written, with
+the unicode flag I<off>.  Modern Unix will render the first as a "?" and the
+other as the U with umlaut, because it expects UTF-8 in the filesystem.
+
+If a user is *unaware* of unicode issues, I argue it is better to pass around
+strings of octets.  Example: the user is in "/home/\xC3\x9C", and calls "Cwd".
+They get the string of octets C<"/home/\xD0">.  They then concatenate this
+string with unicode C<"\x{1234}">.  Perl combines the two as
+C<"/home/\x{C3}\x{9C}/\x{1234}">, however the C3 and 9C just silently went
+from octets to unicode codepoints.  When the user tries opening the file, it
+surprises them with "No such file or directory", because it tried opening
+C<"/home/\xC3\x83\xC2\x9C/\xE1\x88\xB4">.
+
+On the other hand, it would be more correct to define a class of "::FileName",
+which when concatenated with a non-unicode string containing high bytes, would
+encode itself as UTF-8 before returning.  This could have lots of unexpected
+results though...
+
+On Windows, perl is just generally broken for high-unicode filenames.
+The octets approach works just fine for pure-ascii, meanwhile.  Those who need
+unicode support will have found it from other modules, and when using this
+module will also likely look for available flags to enable unicode.  However,
+it might be good to emit a warning if a unicode flag isn't set.
+
+Interesting reading for Windows: L<http://www.perlmonks.org/?node_id=526169>
+
+=head2 Storage Formats
+
+The storage format is supposed to be platform-independent.  JSON seems like a
+good default encoding, however it requires strings to be in Unicode.  When you
+encode a mix of unicode and octet strings, Perl's unicode flag is lost and
+when reading them back out you can't tell which were which.  This means that
+if you take a unicode-as-octets filename and encode it with JSON and decode it
+again, perl will mangle it when you attempt to open the file, and fail.  It
+also means that unicode-as-octets filenames will take extra bytes to encode.
+
+The other option is to use a plain unicode string where possible, but names
+which are not valid UTF-8 are written as C<{"bytes"=>$base64}>.
+
+=head2 Conclusion
+
+If the user is aware-enough to utf8::decode their file names, then they should
+find it just as logical to utf8::decode the filenames from this module before
+using them, or read this module's documentation to find the "unicode_filenames"
+option.
+
+The scanner for Windows platforms will read the UTF-16 from the Windows API,
+and convert it to UTF-8 to match the behavior on Unix.  The Extractor on
+Windows will reverse this process.  Extracting files with invalid UTF-8 on
+Windows will fail.
+
+The default storage format will use a Unicode-only format, and a special
+notation to represent strings which are not unicode.  Other formats might
+keep track of the unicode status of individual fields.
+
 =head1 SEE ALSO
 
 C<Brackup> - A similar-minded backup utility written in Perl, but without the
@@ -539,5 +682,3 @@ nothing to optimize the case where a user renames a dir with 20GB of data in
 it?)
 
 =cut
-
-1;

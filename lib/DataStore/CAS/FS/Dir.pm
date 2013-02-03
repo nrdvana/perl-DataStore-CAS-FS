@@ -182,21 +182,37 @@ not come out to the same checksum.  (which would waste disk space, but
 otherwise doesn't break anything)
 
 =cut
-my $_Encoder;
-sub _Encoder { $_Encoder ||= JSON->new->utf8->canonical }
 
+sub _entry_list_cmp {
+	(ref $a eq 'HASH'? $a->{name} : $a->name)
+		cmp (ref $b eq 'HASH'? $b->{name} : $b->name);
+}
 sub SerializeEntries {
 	my ($class, $entryList, $metadata)= @_;
-	require JSON;
 	ref($metadata) eq 'HASH' or croak "Metadata must be a hashref"
 		if $metadata;
-	my $enc= _Encoder();
+	require JSON;
+	require MIME::Base64;
+	my $enc= JSON->new->utf8->canonical;
 	my $json= $enc->encode($metadata || {});
 	my $ret= "CAS_Dir 00 \n"
 		."{\"metadata\":$json,\n"
 		." \"entries\":[\n";
-	$ret .= $enc->encode(ref $_ eq 'HASH'? $_ : $_->as_hash).",\n"
-		for sort {(ref $a eq 'HASH'? $a->{name} : $a->name) cmp (ref $b eq 'HASH'? $b->{name} : $b->name)} @$entryList;
+	for (sort _entry_list_cmp @$entryList) {
+		my %entry= %{ref $_ eq 'HASH'? $_ : $_->as_hash};
+		for (keys %entry) {
+			# All values must be valid unicode, or we replace them with {bytes=>$base64}
+			# Otherwise JSON module would encode the high ascii as unicode codepoints
+			# and we wouldn't be able to tell which was which when we read it back.
+			# See section "UNICODE vs. FILENAMNES" in DataStore::CAS::FS
+			if (!utf8::is_utf8($entry{$_}) && !utf8::decode($entry{$_})) {
+				# Filename is a sequence of bytes which is not UTF-8
+				$entry{$_}= { bytes => MIME::Base64::encode_base64($entry{$_}) };
+			}
+		}
+		$ret .= $enc->encode(\%entry).",\n"
+	}
+
 	substr($ret, -2)= "\n" if (@$entryList);
 	return $ret."]}\n";
 }
@@ -212,7 +228,7 @@ unique names.  (in particular, because of case sensitivity rules)
 =cut
 
 sub iterator {
-	return DataStore::CAS::FS::Dir::EntryIter->new($_[0]);
+	return DataStore::CAS::FS::Dir::EntryIter->new($_[0], $_[0]{_entries});
 }
 
 =head2 $ent= $dir->get_entry($name)
@@ -228,7 +244,24 @@ sub get_entry {
 	);
 }
 
-=head1 IMPLEMENTATION NOTES
+=head1 EXTENDING
+
+Subclasses likely need to supply their own implementation of the following
+methods:
+
+=over
+
+=item SerializeEntries
+
+=item iterator
+
+=item get_entry
+
+=item _deserialize
+
+=back
+
+and call I<RegisterEntries> in a BEGIN block.
 
 Subclasses have the following handy private functions to work with:
 
@@ -238,43 +271,82 @@ Private-ish constructor.  Like "new" with no error checking, and requires a
 blessable hashref.
 
 Required parameters are "file" and "format".  Format must be the type encoded
-in the file, or deserialization will fail.
-
-The factory method Dir::new() will usually pass a "handle" or "data" as well.
-"data" is the complete data of the file, and if present should eliminate the
-need to open the file.  "handle" is an open file handle to the data of the
-file, and should be used if provided.  If neither is given, call file->open
-to get a handle to work with.
+in the file, or deserialization will fail.  The factory method Dir::new() will
+usually pass a "handle" or "data" as well.
 
 =cut
+
+our @_ctor_params= qw: file format handle data :;
 sub _ctor {
 	my ($class, $params)= @_;
-	require JSON;
+	my $self= { map { $_ => delete $params->{$_} } @_ctor_params };
+	croak "Invalid param(s): ".join(', ', keys %$params)
+		if keys %$params;
+	my %args;
+	@args{'handle','data'}= delete @{$self}{'handle','data'};
+	bless $self, $class;
+	$self->_deserialize(\%args);
+	return $self;
+}
 
-	my $handle= delete $params->{handle};
-	my $bytes= delete $params->{data};
-	my $self= bless $params, $class;
+=head2 $self->_deserialize( \%params )
+
+This method is called at the end of the default constructor.
+
+Attributes I<file> and I<format> have already been initialized, and if the
+parameters 'handle' and 'data' were specified they are forwarded to this
+method.
+
+"data" is the complete data of the file, and if present should eliminate the
+need to open the file.
+
+"handle" is an open file handle to the data of the file, and should be used
+if provided.
+
+If neither is given, call file->open to get a handle to work with.  You also
+have the option to lazy-open the file, and/or store the 'data' and 'handle'
+for later use.
+
+=cut
+
+sub _deserialize {
+	my ($self, $params)= @_;
+	my $bytes= $params->{data};
+	my $handle= $params->{handle};
 
 	# This implementation just processes the file as a whole.
 	# Read it in if we don't have it yet.
-	my $header_len= $class->_calc_header_length($params->{format});
+	my $header_len= $self->_calc_header_length($self->format);
 	if (defined $bytes) {
 		substr($bytes, 0, $header_len)= '';
 	}
 	else {
-		defined $handle or $handle= $params->{file}->open;
+		defined $handle or $handle= $self->file->open;
 		seek($handle, $header_len, 0) or croak "seek: $!";
 		local $/= undef;
 		$bytes= <$handle>;
 	}
 
-	my $data= _Encoder()->decode($bytes);
+	require JSON;
+	my $enc= JSON->new->utf8->canonical;
+	my $data= $enc->decode($bytes);
 	$self->{metadata}= $data->{metadata} or croak "Directory data is missing 'metadata'";
 	$data->{entries} or croak "Directory data is missing 'entries'";
-	$self->{_entries}= [
-		map { DataStore::CAS::FS::Dir::Entry->new($_) }
-			@{$data->{entries}}
-	];
+	my @entries;
+	for my $ent (@{$data->{entries}}) {
+		# See SerializeEntries
+		utf8::encode($ent->{name})
+			unless ref($ent->{name});
+		utf8::encode($ent->{path_ref})
+			if defined $ent->{path_ref} and !ref($ent->{path_ref});
+		for (values %$ent) {
+			if (ref $_ eq 'HASH' and (defined $_->{bytes}) and (1 == keys %$_)) {
+				$_= MIME::Base64::decode_base64($_->{bytes});
+			}
+		}
+		push @entries, DataStore::CAS::FS::Dir::Entry->new($ent);
+	};
+	$self->{_entries}= \@entries;
 	$self;
 }
 
@@ -368,6 +440,37 @@ sub _readall {
 		$got= read($_[1], $_[2], $count, length $_[2]);
 	}
 }
+
+
+package DataStore::CAS::FS::Dir::EntryIter;
+use strict;
+use warnings;
+
+=head2 DataStore::CAS::FS::Dir::EntryIter->new( \@entries )
+
+This is a very simple iterator class which takes an arrayref of Dir::Entry
+and iterates it.  If you have your directory entries in an array, this
+makes a nice on-line implementation of the ->iterator method.
+
+Don't bother trying to subclass it; custom iterators don't need a class
+hierarchy, just a 'next' and 'eof' method.
+
+=cut
+
+sub new {
+	bless { entries => $_[1], i => 0, n => scalar( @{$_[1]} ) }, $_[0];
+}
+
+sub next {
+	return $_[0]{entries}[ $_[0]{i}++ ]
+		if $_[0]{i} < $_[0]{n};
+	return undef;
+}
+
+sub eof {
+	return $_[0]{i} >= $_[0]{n};
+}
+
 
 package DataStore::CAS::FS::Dir::Entry;
 use strict;
@@ -540,23 +643,5 @@ constant)
 =cut
 
 sub as_hash { ${$_[0]} }
-
-package DataStore::CAS::FS::Dir::EntryIter;
-use strict;
-use warnings;
-
-sub new {
-	bless { dir => $_[1], i => 0, n => scalar( @{$_[1]->_entries} ) }, $_[0];
-}
-
-sub next {
-	return $_[0]{dir}->_entries->[ $_[0]{i}++ ]
-		if $_[0]{i} < $_[0]{n};
-	return undef;
-}
-
-sub eof {
-	return $_[0]{i} >= $_[0]{n};
-}
 
 1;

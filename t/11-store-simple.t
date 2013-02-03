@@ -77,7 +77,7 @@ sub test_constructor {
 	mkdir($casdir) or die "$!";
 	dies_like { DataStore::CAS::Simple->new(path => $casdir, create => 1, fanout => [1,1,1,1,1,1]) } qr/fanout/, 'fanout too wide';
 
-	my $cas= new_ok('DataStore::CAS::Simple', [ path => $casdir, create => 1, digest => 'SHA-1', fanout => [1,1,1,1,1] ], 'create with deep fanout');
+	$cas= new_ok('DataStore::CAS::Simple', [ path => $casdir, create => 1, digest => 'SHA-1', fanout => [1,1,1,1,1] ], 'create with deep fanout');
 	$cas= undef;
 	$cas= new_ok('DataStore::CAS::Simple', [ path => $casdir ], 're-open');
 	done_testing;

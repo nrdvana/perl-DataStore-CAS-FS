@@ -1,16 +1,17 @@
 #!perl -T
 use strict;
 use warnings;
-
 use Test::More;
 
-use_ok('File::CAS::Scanner') || BAIL_OUT;
+use_ok( 'DataStore::CAS::FS::Scanner' ) || BAIL_OUT;
 
-my $scn= new_ok('File::CAS::Scanner', []);
+my $scn= new_ok( 'DataStore::CAS::FS::Scanner', [] );
 
 chdir('t') if -d 't';
+-d 'scantest1' or BAIL_OUT('missing scantest1 directory for testing directory scanner');
+-d 'scantest2' or BAIL_OUT('missing scantest1 directory for testing directory scanner');
 
-ok( my $dir= $scn->scanDir('scantest1'), 'scan');
+ok( my $dir= $scn->scan_dir('scantest1'), 'scan' );
 my @expected= (
 	[ qw( C file 2 ) ],
 	[ qw( a file 0 ) ],
@@ -31,5 +32,19 @@ for (my $i=0; $i < @expected; $i++) {
 	is($entries->[$i]{size}, $expected[$i][2], 'size');
 	is($entries->[$i]{modify_ts}, (lstat "scantest1/$expected[$i][0]")[9], 'mtime');
 }
+
+# unicode tests ------------------------
+
+my @expected= (
+	"F\x{C3}\x{9C}BAR",
+	"\x{E8}\x{A9}\x{A6}\x{E3}\x{81}\x{97}",
+);
+
+ok( $dir= $scn->scan_dir('scantest2'), 'scan utf-8 as bytes' );
+$entries= $dir->{entries};
+for (my $i= 0; $i < @expected; $i++) {
+	is( $entries->[$i]{name}, $expected[$i], 'name' );
+}
+
 
 done_testing;

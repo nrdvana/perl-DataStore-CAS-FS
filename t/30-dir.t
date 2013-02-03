@@ -56,4 +56,24 @@ is_deeply( $dir->metadata, \%metadata, 'deserialized metadata are correct' )
 is_deeply( [ map { $_->as_hash } @{$dir->{_entries}} ], \@entries, 'deserialized entries are correct' )
 	or diag Dumper($dir->{_entries});
 
+# unicode testing ----------------------
+
+@entries= (
+	{ type => 'file', name => "\xC4\x80\xC5\x90", size => '100000000000000000000000000', hash => '0000' },
+);
+%metadata= (
+	"\x{AC00}" => "\x{0C80}"
+);
+my $expected= "CAS_Dir 00 \n{\"metadata\":{\"\xEA\xB0\x80\":\"\xE0\xB2\x80\"},\n \"entries\":[\n{\"hash\":\"0000\",\"name\":\"\xC4\x80\xC5\x90\",\"size\":\"100000000000000000000000000\",\"type\":\"file\"}\n]}\n";
+my $unicode_dir= DataStore::CAS::FS::Dir->SerializeEntries(\@entries, \%metadata);
+ok( !utf8::is_utf8($unicode_dir), 'encoded as bytes' );
+is( $unicode_dir, $expected, 'encoded correctly' );
+$file= bless { hash => $hashOfSerialized, size => length($unicode_dir) }, 'DataStore::CAS::File';
+$dir= new_ok( 'DataStore::CAS::FS::Dir', [ file => $file, data => $unicode_dir ], 'unicode dir deserialized from scalar' );
+is_deeply( $dir->metadata, \%metadata, 'deserialized metadata are correct' )
+	or diag Dumper($dir->metadata);
+is_deeply( [ map { $_->as_hash } @{$dir->{_entries}} ], \@entries, 'deserialized entries are correct' )
+	or diag Dumper($dir->{_entries});
+
+
 done_testing;
