@@ -51,7 +51,7 @@ sub SerializeEntries {
 	
 	my $ret= "CAS_Dir 07 Minimal\n";
 	if ($metadata and scalar %$metadata) {
-		my $enc= JSON->new->utf8->canonical;
+		my $enc= JSON->new->utf8->canonical->convert_blessed;
 		$ret .= $enc->encode($metadata)."\0";
 	}
 	else {
@@ -72,7 +72,7 @@ sub SerializeEntries {
 		croak "Value too long: '$ref'" if 255 < length $ref;
 		$ret .= pack('CCA', length($name), length($ref), $code).$name."\0".$ref."\0";
 	}
-	
+
 	$ret;
 }
 
@@ -98,6 +98,8 @@ sub _deserialize {
 	if ($meta_end > 0) {
 		my $enc= JSON->new->utf8->canonical;
 		$self->{metadata}= $enc->decode(substr($bytes, 0, $meta_end));
+		# Restore any octet strings protected by ByteArray objects.
+		DataStore::CAS::FS::Dir::ByteArray->RestoreByteArrays($self->{metadata});
 	}
 
 	my $pos= $meta_end+1;

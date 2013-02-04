@@ -17,6 +17,7 @@ my @entries= (
 	{ type => 'pipe',     name => 'f', size => 1,     ref => undef,    bar => 'xyz' },
 	{ type => 'blockdev', name => 'd', size => 10000, ref => '1234',   },
 	{ type => 'file',     name => 'b', size => 10,    ref => '1111',   1 => 2, 3 => 4, 5 => 6},
+	{ type => 'file',     name => "\x{100}", size => 1,     ref => "\x{100}",},
 	{ type => 'chardev',  name => 'e', size => 0,     ref => '4321',   },
 	{ type => 'symlink',  name => 'c', size => 10,    ref => 'fedcba', },
 	{ type => 'socket',   name => 'g', size => 1,     ref => undef,    },
@@ -29,6 +30,7 @@ my @expected= (
 	{ type => 'chardev',  name => 'e', size => 0,     ref => '4321',   },
 	{ type => 'pipe',     name => 'f', size => 1,     ref => undef,    },
 	{ type => 'socket',   name => 'g', size => 1,     ref => undef,    },
+	{ type => 'file',     name => "\x{C4}\x{80}", size => 1, ref => "\x{C4}\x{80}", },
 );
 
 my $sto= new_ok('DataStore::CAS::Virtual', [], 'create temp store');

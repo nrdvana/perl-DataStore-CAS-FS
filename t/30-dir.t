@@ -16,13 +16,14 @@ my %metadata= (
 	baz => 3
 );
 my @entries= (
-	{ type => 'file',     name => 'a', size => 10,    ref => '0000',   foo => 42, sdlfjskldf => 'sldfjhlsdkfjh' },
-	{ type => 'pipe',     name => 'f', size => 1,     ref => undef,    bar => 'xyz' },
-	{ type => 'blockdev', name => 'd', size => 10000, ref => '1234',   },
-	{ type => 'file',     name => 'b', size => 10,    ref => '1111',   1 => 2, 3 => 4, 5 => 6},
-	{ type => 'chardev',  name => 'e', size => 0,     ref => '4321',   },
-	{ type => 'symlink',  name => 'c', size => 10,    ref => 'fedcba', },
-	{ type => 'socket',   name => 'g', size => 1,     ref => undef,    },
+	{ type => 'file',     name => 'a',       size => 10,    ref => '0000',   foo => 42, sdlfjskldf => 'sldfjhlsdkfjh' },
+	{ type => 'pipe',     name => 'f',       size => 1,     ref => undef,    bar => 'xyz' },
+	{ type => 'blockdev', name => 'd',       size => 10000, ref => '1234',   },
+	{ type => 'file',     name => "\x{100}", size => 1,     ref => "\x{100}" },
+	{ type => 'file',     name => 'b',       size => 10,    ref => '1111',   1 => 2, 3 => 4, 5 => 6},
+	{ type => 'chardev',  name => 'e',       size => 0,     ref => '4321',   },
+	{ type => 'symlink',  name => 'c',       size => 10,    ref => 'fedcba', },
+	{ type => 'socket',   name => 'g',       size => 1,     ref => undef,    },
 );
 my @expected= (
 	{ type => 'file',     name => 'a', size => 10,    ref => '0000',   foo => 42, sdlfjskldf => 'sldfjhlsdkfjh' },
@@ -32,8 +33,9 @@ my @expected= (
 	{ type => 'chardev',  name => 'e', size => 0,     ref => '4321',   },
 	{ type => 'pipe',     name => 'f', size => 1,     ref => undef,    bar => 'xyz' },
 	{ type => 'socket',   name => 'g', size => 1,     ref => undef,    },
+	{ type => 'file',     name => "\x{C4}\x{80}", size => 1, ref => "\x{C4}\x{80}", },
 );
-my $hashOfSerialized= '7164cf0ecde9cbd3ef0b97fc955512155b97d2d8';
+my $hashOfSerialized= '201e5ea6bc02ba3ba0da41f82ace8a5bfa735e87';
 
 my $empty_dir= DataStore::CAS::FS::Dir->SerializeEntries([], {});
 is( Digest->new('SHA-1')->add($empty_dir)->hexdigest(), $nullDirHash, 'null dir serialized correctly' )

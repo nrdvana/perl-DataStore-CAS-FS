@@ -5,7 +5,7 @@ use warnings;
 use Carp;
 use Try::Tiny;
 require JSON;
-require MIME::Base64;
+use MIME::Base64;
 
 our $VERSION= 1.0000;
 
@@ -186,34 +186,46 @@ otherwise doesn't break anything)
 =cut
 
 sub _entry_list_cmp {
-	(ref $a eq 'HASH'? $a->{name} : $a->name)
-		cmp (ref $b eq 'HASH'? $b->{name} : $b->name);
+	my $a_n= $a->name;
+	utf8::encode($a_n) if utf8::is_utf8($a_n);
+	my $b_n= $b->name;
+	utf8::encode($b_n) if utf8::is_utf8($b_n);
+	return $a_n cmp $b_n;
 }
 sub SerializeEntries {
-	my ($class, $entryList, $metadata)= @_;
+	my ($class, $entry_list, $metadata)= @_;
 	ref($metadata) eq 'HASH' or croak "Metadata must be a hashref"
 		if $metadata;
-	my $enc= JSON->new->utf8->canonical;
+
+	use Data::Printer;
+	my @entries= sort { $a->{name} cmp $b->{name} }
+		map {
+			my %entry= %{ref $_ eq 'HASH'? $_ : $_->as_hash};
+			# Convert all name strings down to plain bytes, for our sort
+			# (they should be already)
+			utf8::encode($entry{name}) if utf8::is_utf8($entry{name});
+			\%entry;
+		} @$entry_list;
+
+	my $enc= JSON->new->utf8->canonical->convert_blessed;
 	my $json= $enc->encode($metadata || {});
 	my $ret= "CAS_Dir 00 \n"
 		."{\"metadata\":$json,\n"
 		." \"entries\":[\n";
-	for (sort _entry_list_cmp @$entryList) {
-		my %entry= %{ref $_ eq 'HASH'? $_ : $_->as_hash};
-		for (keys %entry) {
-			# All values must be valid unicode, or we replace them with {bytes=>$base64}
-			# Otherwise JSON module would encode the high ascii as unicode codepoints
-			# and we wouldn't be able to tell which was which when we read it back.
-			# See section "UNICODE vs. FILENAMNES" in DataStore::CAS::FS
-			if (!utf8::is_utf8($entry{$_}) && !utf8::decode($entry{$_})) {
-				# Filename is a sequence of bytes which is not UTF-8
-				$entry{$_}= { bytes => MIME::Base64::encode_base64($entry{$_}) };
-			}
+	for (@entries) {
+		# The name field is plain bytes, and *might* not be valid UTF-8.
+		# JSON module will force it to be UTF-8 (or encode the high-ascii
+		# bytes as codepoints, which would be confusing later)
+		# We test for that case, and wrap it in a ByteArray which gets
+		# JSON-encoded as "{ bytes => $base64 }".
+		if (!utf8::decode($_->{name})) {
+			$_->{name}= DataStore::CAS::FS::Dir::ByteArray->new($_->{name});
 		}
-		$ret .= $enc->encode(\%entry).",\n"
+		$ret .= $enc->encode($_).",\n"
 	}
 
-	substr($ret, -2)= "\n" if (@$entryList);
+	# remove trailing comma
+	substr($ret, -2)= "\n" if @entries;
 	return $ret."]}\n";
 }
 
@@ -329,20 +341,23 @@ sub _deserialize {
 
 	my $enc= JSON->new->utf8->canonical;
 	my $data= $enc->decode($bytes);
+	# Reverse the process of "TO_JSON" on ByteArray objects.
+	# This saves them from getting mangled by JSON's conversion to Unicode.
+	DataStore::CAS::FS::Dir::ByteArray->RestoreByteArrays($data);
+
 	$self->{metadata}= $data->{metadata} or croak "Directory data is missing 'metadata'";
 	$data->{entries} or croak "Directory data is missing 'entries'";
 	my @entries;
 	for my $ent (@{$data->{entries}}) {
-		# See SerializeEntries
-		utf8::encode($ent->{name})
-			unless ref($ent->{name});
-		utf8::encode($ent->{path_ref})
-			if defined $ent->{path_ref} and !ref($ent->{path_ref});
-		for (values %$ent) {
-			if (ref $_ eq 'HASH' and (defined $_->{bytes}) and (1 == keys %$_)) {
-				$_= MIME::Base64::decode_base64($_->{bytes});
-			}
+		# See SerializeEntries and ::ByteArray
+		# While name and ref are probably logically unicode, we want them
+		#  kept as octets for compatibility reasons.
+		if (ref $ent->{name} eq 'DataStore::CAS::FS::Dir::ByteArray') {
+			$ent->{name}= "$ent->{name}";
 		}
+		utf8::encode($ent->{name}) if utf8::is_utf8($ent->{name});
+		utf8::encode($ent->{ref}) if utf8::is_utf8($ent->{ref});
+
 		push @entries, DataStore::CAS::FS::Dir::Entry->new($ent);
 	};
 	$self->{_entries}= \@entries;
@@ -470,6 +485,61 @@ sub eof {
 	return $_[0]{i} >= $_[0]{n};
 }
 
+package DataStore::CAS::FS::Dir::ByteArray;
+use strict;
+use warnings;
+use overload '""' => \&to_string;
+use MIME::Base64;
+use Scalar::Util 'refaddr', 'reftype', 'blessed';
+
+=head2 DataStore::CAS::FS::Dir::ByteArray->new( $byte_str )
+
+This utility class wraps a string such that it won't accidentally be converted
+to unicode.  When encoding Perl strings as JSON, the unicode flag gets lost,
+and all strings are interpreted as unicode when deserialized.
+
+This class has a to_json() method that writes C<{ bytes => $base64 }>, which
+is checked for when reading data back in.
+
+=cut
+
+sub new { my ($class, $str)= @_; bless \$str, $class; }
+
+sub to_string { ${$_[0]} }
+
+sub TO_JSON { return { bytes => encode_base64(${$_[0]}) } }
+
+# The inverse operation, which can be applied to a whole tree
+#  after deserializing JSON.
+my $_seen= ();
+sub RestoreByteArrays {
+	return unless defined $_[1] and ref $_[1];
+	local %$_seen= ();
+	local $_= $_[1];
+	&_restore_recursive;
+}
+sub _restore_recursive {
+	return if $_seen->{blessed($_)? refaddr $_ : $_}++;
+	my $r= blessed($_)? reftype $_ : ref $_;
+	if ($r eq 'HASH') {
+		if (defined $_->{bytes} and (ref $_ eq 'HASH') and (keys %$_ == 1)) {
+			# Found a former instance.  Restore it to being a blessed object.
+			$_= __PACKAGE__->new(decode_base64($_->{bytes}));
+		}
+		else {
+			defined $_ and ref $_ and &_restore_recursive
+				for values %$_;
+		}
+	}
+	elsif ($r eq 'ARRAY') {
+		defined $_ and ref $_ and &_restore_recursive
+			for @$_;
+	}
+	elsif ($r eq 'REF' and defined $$_ and ref $$_) {
+		local $_= $$_;
+		&_restore_recursive
+	}
+}
 
 $INC{'DataStore/CAS/FS/Dir/Entry.pm'}= 1;
 package DataStore::CAS::FS::Dir::Entry;

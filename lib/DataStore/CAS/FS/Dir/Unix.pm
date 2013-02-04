@@ -70,9 +70,9 @@ sub SerializeEntries {
 			} @entries
 	};
 	
-	my $meta= JSON->new->utf8->encode($metadata);
+	my $meta_json= JSON->new->utf8->canonical->convert_blessed->encode($metadata);
 	my $ret= "CAS_Dir 04 Unix\n"
-		.pack('N', length($meta)).$meta;
+		.pack('N', length($meta_json)).$meta_json;
 
 	# Now, build a nice compact string for each entry.
 	for my $e (sort {$a->name cmp $b->name} @entries) {
@@ -125,6 +125,8 @@ sub _deserialize {
 	my ($dirmeta_len)= unpack('N', $buf);
 	$self->_readall($handle, my $json, $dirmeta_len);
 	my $meta= $self->{_metadata}= JSON->new->utf8->canonical->decode($json);
+	# Restore any octet strings protected by ByteArray objects.
+	DataStore::CAS::FS::Dir::ByteArray->RestoreByteArrays($meta);
 
 	# Quick sanity checks
 	exists $meta->{_}{def}{uid}
