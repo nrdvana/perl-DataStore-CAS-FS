@@ -5,6 +5,7 @@ use warnings;
 use Try::Tiny;
 use Carp;
 use JSON;
+use DataStore::CAS::FS::NonUnicode;
 
 use parent 'DataStore::CAS::FS::Dir';
 
@@ -124,9 +125,11 @@ sub _deserialize {
 	$self->_readall($handle, $buf, 4);
 	my ($dirmeta_len)= unpack('N', $buf);
 	$self->_readall($handle, my $json, $dirmeta_len);
-	my $meta= $self->{_metadata}= JSON->new->utf8->canonical->decode($json);
-	# Restore any octet strings protected by ByteArray objects.
-	DataStore::CAS::FS::Dir::ByteArray->RestoreByteArrays($meta);
+	my $enc= JSON->new()->utf8->canonical->convert_blessed
+		->filter_json_single_key_object(
+			'*NonUnicode*' => \&DataStore::CAS::FS::NonUnicode::FROM_JSON
+		);
+	my $meta= $self->{_metadata}= $enc->decode($json);
 
 	# Quick sanity checks
 	exists $meta->{_}{def}{uid}

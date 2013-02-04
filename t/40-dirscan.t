@@ -35,7 +35,7 @@ for (my $i=0; $i < @expected; $i++) {
 
 # unicode tests ------------------------
 
-my @expected= (
+@expected= (
 	"F\x{C3}\x{9C}BAR",
 	"\x{E8}\x{A9}\x{A6}\x{E3}\x{81}\x{97}",
 );

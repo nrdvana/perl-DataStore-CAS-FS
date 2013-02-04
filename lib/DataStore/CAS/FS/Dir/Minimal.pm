@@ -5,6 +5,7 @@ use warnings;
 use Carp;
 use Try::Tiny;
 require JSON;
+use DataStore::CAS::FS::NonUnicode;
 
 use parent 'DataStore::CAS::FS::Dir';
 
@@ -96,10 +97,11 @@ sub _deserialize {
 	my $meta_end= index($bytes, "\0");
 	$meta_end >= 0 or croak "Missing end of metadata";
 	if ($meta_end > 0) {
-		my $enc= JSON->new->utf8->canonical;
+		my $enc= JSON->new()->utf8->canonical->convert_blessed
+			->filter_json_single_key_object(
+				'*NonUnicode*' => \&DataStore::CAS::FS::NonUnicode::FROM_JSON
+			);
 		$self->{metadata}= $enc->decode(substr($bytes, 0, $meta_end));
-		# Restore any octet strings protected by ByteArray objects.
-		DataStore::CAS::FS::Dir::ByteArray->RestoreByteArrays($self->{metadata});
 	}
 
 	my $pos= $meta_end+1;

@@ -5,7 +5,7 @@ use warnings;
 use Carp;
 use Try::Tiny;
 require JSON;
-use MIME::Base64;
+use DataStore::CAS::FS::NonUnicode;
 
 our $VERSION= 1.0000;
 
@@ -203,7 +203,8 @@ sub SerializeEntries {
 			my %entry= %{ref $_ eq 'HASH'? $_ : $_->as_hash};
 			# Convert all name strings down to plain bytes, for our sort
 			# (they should be already)
-			utf8::encode($entry{name}) if utf8::is_utf8($entry{name});
+			utf8::encode($entry{name})
+				if !ref $entry{name} and utf8::is_utf8($entry{name});
 			\%entry;
 		} @$entry_list;
 
@@ -216,11 +217,17 @@ sub SerializeEntries {
 		# The name field is plain bytes, and *might* not be valid UTF-8.
 		# JSON module will force it to be UTF-8 (or encode the high-ascii
 		# bytes as codepoints, which would be confusing later)
-		# We test for that case, and wrap it in a ByteArray which gets
-		# JSON-encoded as "{ bytes => $base64 }".
-		if (!utf8::decode($_->{name})) {
-			$_->{name}= DataStore::CAS::FS::Dir::ByteArray->new($_->{name});
+		# We test for that case, and wrap it in a NonUnicode which gets
+		# specially serialized into JSON.
+		if (!utf8::is_utf8($_->{name}) and !utf8::decode($_->{name})) {
+			$_->{name}= DataStore::CAS::FS::NonUnicode->new($_->{name});
 		}
+		# ref should also be treated as octets.
+		if (!utf8::is_utf8($_->{ref}) and !utf8::decode($_->{ref})) {
+			$_->{ref}= DataStore::CAS::FS::NonUnicode->new($_->{ref});
+		}
+		# Any other field with high bytes without the unicode flag should be
+		# wrapped by the thing that writes it.
 		$ret .= $enc->encode($_).",\n"
 	}
 
@@ -339,24 +346,21 @@ sub _deserialize {
 		$bytes= <$handle>;
 	}
 
-	my $enc= JSON->new->utf8->canonical;
+	my $enc= JSON->new()->utf8->canonical->convert_blessed
+		->filter_json_single_key_object(
+			'*NonUnicode*' => \&DataStore::CAS::FS::NonUnicode::FROM_JSON
+		);
 	my $data= $enc->decode($bytes);
-	# Reverse the process of "TO_JSON" on ByteArray objects.
-	# This saves them from getting mangled by JSON's conversion to Unicode.
-	DataStore::CAS::FS::Dir::ByteArray->RestoreByteArrays($data);
-
 	$self->{metadata}= $data->{metadata} or croak "Directory data is missing 'metadata'";
 	$data->{entries} or croak "Directory data is missing 'entries'";
 	my @entries;
 	for my $ent (@{$data->{entries}}) {
-		# See SerializeEntries and ::ByteArray
 		# While name and ref are probably logically unicode, we want them
 		#  kept as octets for compatibility reasons.
-		if (ref $ent->{name} eq 'DataStore::CAS::FS::Dir::ByteArray') {
-			$ent->{name}= "$ent->{name}";
-		}
-		utf8::encode($ent->{name}) if utf8::is_utf8($ent->{name});
-		utf8::encode($ent->{ref}) if utf8::is_utf8($ent->{ref});
+		utf8::encode($ent->{name})
+			if !ref $ent->{name} and utf8::is_utf8($ent->{name});
+		utf8::encode($ent->{ref})
+			if !ref $ent->{ref}  and utf8::is_utf8($ent->{ref});
 
 		push @entries, DataStore::CAS::FS::Dir::Entry->new($ent);
 	};
@@ -483,62 +487,6 @@ sub next {
 
 sub eof {
 	return $_[0]{i} >= $_[0]{n};
-}
-
-package DataStore::CAS::FS::Dir::ByteArray;
-use strict;
-use warnings;
-use overload '""' => \&to_string;
-use MIME::Base64;
-use Scalar::Util 'refaddr', 'reftype', 'blessed';
-
-=head2 DataStore::CAS::FS::Dir::ByteArray->new( $byte_str )
-
-This utility class wraps a string such that it won't accidentally be converted
-to unicode.  When encoding Perl strings as JSON, the unicode flag gets lost,
-and all strings are interpreted as unicode when deserialized.
-
-This class has a to_json() method that writes C<{ bytes => $base64 }>, which
-is checked for when reading data back in.
-
-=cut
-
-sub new { my ($class, $str)= @_; bless \$str, $class; }
-
-sub to_string { ${$_[0]} }
-
-sub TO_JSON { return { bytes => encode_base64(${$_[0]}) } }
-
-# The inverse operation, which can be applied to a whole tree
-#  after deserializing JSON.
-my $_seen= ();
-sub RestoreByteArrays {
-	return unless defined $_[1] and ref $_[1];
-	local %$_seen= ();
-	local $_= $_[1];
-	&_restore_recursive;
-}
-sub _restore_recursive {
-	return if $_seen->{blessed($_)? refaddr $_ : $_}++;
-	my $r= blessed($_)? reftype $_ : ref $_;
-	if ($r eq 'HASH') {
-		if (defined $_->{bytes} and (ref $_ eq 'HASH') and (keys %$_ == 1)) {
-			# Found a former instance.  Restore it to being a blessed object.
-			$_= __PACKAGE__->new(decode_base64($_->{bytes}));
-		}
-		else {
-			defined $_ and ref $_ and &_restore_recursive
-				for values %$_;
-		}
-	}
-	elsif ($r eq 'ARRAY') {
-		defined $_ and ref $_ and &_restore_recursive
-			for @$_;
-	}
-	elsif ($r eq 'REF' and defined $$_ and ref $$_) {
-		local $_= $$_;
-		&_restore_recursive
-	}
 }
 
 $INC{'DataStore/CAS/FS/Dir/Entry.pm'}= 1;
