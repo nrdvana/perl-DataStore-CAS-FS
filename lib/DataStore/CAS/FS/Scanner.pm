@@ -225,10 +225,10 @@ sub scan_dir_ent {
 		}
 	}
 	elsif ($attrs{type} eq 'symlink') {
-		$attrs{path_ref}= readlink $path;
+		$attrs{ref}= readlink $path;
 	}
 	elsif ($attrs{type} eq 'blockdev' or $attrs{type} eq 'chardev') {
-		$attrs{device}= $self->_split_dev_node($stat->[6]);
+		$attrs{ref}= $self->_split_dev_node($stat->[6]);
 	}
 	\%attrs;
 }

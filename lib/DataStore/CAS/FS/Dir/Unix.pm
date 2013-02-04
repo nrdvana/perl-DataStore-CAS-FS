@@ -1,17 +1,16 @@
-package File::CAS::Dir::Unix;
-
-use 5.006;
+package DataStore::CAS::FS::Dir::Unix;
+use 5.008;
 use strict;
 use warnings;
-
+use Try::Tiny;
 use Carp;
+use JSON;
+
+use parent 'DataStore::CAS::FS::Dir';
 
 our $VERSION= 1.0000;
-use parent 'File::CAS::Dir';
 
-__PACKAGE__->RegisterFormat(__PACKAGE__, __PACKAGE__);
-
-=head1 FACTORY FUNCTIONS
+__PACKAGE__->RegisterFormat('Unix', __PACKAGE__);
 
 =head1 METHODS
 
@@ -22,175 +21,185 @@ __PACKAGE__->RegisterFormat(__PACKAGE__, __PACKAGE__);
 
 our %_TypeToCode= ( file => 'f', dir => 'd', symlink => 'l', chardev => 'c', blockdev => 'b', pipe => 'p', socket => 's' );
 our %_CodeToType= map { $_TypeToCode{$_} => $_ } keys %_TypeToCode;
-our %_ValFieldForType= ( f => 'hash', d => 'hash', l => 'linkTarget', c => 'device', b => 'device', p => '', s => '' );
-our @fieldOrder= qw( code name value size unix_uid unix_gid unix_mode unix_atime unix_mtime unix_ctime unix_dev unix_inode unix_nlink unix_blocksize unix_blockcount );
+our @fieldOrder= qw( code name value size unix_uid unix_gid unix_mode unix_atime unix_mtime unix_ctime unix_dev unix_inode unix_nlink unix_blocksize unix_blocks );
 sub SerializeEntries {
-	my ($class, $entryList, $metadata)= @_;
-	
+	my ($class, $entry_list, $metadata)= @_;
+	defined $metadata->{_}
+		and croak '$metadata{_} is reserved for the directory encoder';
+	my @entries= map { ref $_ eq 'HASH'? DataStore::CAS::FS::Dir::Entry->new($_) : $_ } @$entry_list;
+
 	# Often, an entire directory will have the same permissions for all entries
 	#  or vary only by file/directory type.
 	# First we find the default value by whichever appears the most often.
-	
 	my %occur;
-	defined($_->{unix_uid}) and $occur{$_->{unix_uid}}++ for @$entryList;
+	defined($_->unix_uid) and $occur{$_->unix_uid}++ for @entries;
 	my ($def_uid)= sort { $occur{$a} > $occur{$b} } keys %occur;
 	$def_uid= '' unless defined $def_uid;
-	
+
 	%occur= ();
-	defined($_->{unix_gid}) and $occur{$_->{unix_gid}}++ for @$entryList;
+	defined($_->unix_gid) and $occur{$_->unix_gid}++ for @entries;
 	my ($def_gid)= sort { $occur{$a} > $occur{$b} } keys %occur;
 	$def_gid= '' unless defined $def_gid;
-	
+
 	%occur= ();
-	defined($_->{unix_mode}) and $_->{type} ne 'dir' and $occur{$_->{unix_mode}}++ for @$entryList;
+	defined($_->unix_mode) and $_->type ne 'dir' and $occur{$_->unix_mode}++ for @entries;
 	my ($def_fmode)= sort { $occur{$a} > $occur{$b} } keys %occur;
 	$def_fmode= '' unless defined $def_fmode;
-	
+
 	%occur= ();
-	defined($_->{unix_mode}) and $_->{type} eq 'dir' and $occur{$_->{unix_mode}}++ for @$entryList;
+	defined($_->unix_mode) and $_->type eq 'dir' and $occur{$_->unix_mode}++ for @entries;
 	my ($def_dmode)= sort { $occur{$a} > $occur{$b} } keys %occur;
 	$def_dmode= '' unless defined $def_dmode;
-	
+
 	%occur= ();
-	defined($_->{unix_dev}) and $occur{$_->{unix_dev}}++ for @$entryList;
+	defined($_->unix_dev) and $occur{$_->unix_dev}++ for @entries;
 	my ($def_dev)= sort { $occur{$a} > $occur{$b} } keys %occur;
 	$def_dev= '' unless defined $def_dev;
 	
-	my $defaultMeta= join("\0", $def_uid, $def_gid, $def_fmode, $def_dmode, $def_dev)."\0";
-	croak "Metadata too long"
-		if length($defaultMeta) > 255; # I don't think this can possibly happen.
+	$metadata->{_}{def}= { uid => $def_uid, gid => $def_gid, fmode => $def_fmode, dmode => $def_dmode, dev => $def_dev };
+
+	# Save the mapping of UID to User and GID to Group
+	$metadata->{_}{umap}= {
+		map { (defined $_->unix_uid && defined $_->unix_user)?
+			($_->unix_uid => $_->unix_user) : ()
+			} @entries
+	};
+	$metadata->{_}{gmap}= {
+		map { (defined $_->unix_gid && defined $_->unix_group)?
+			($_->unix_gid => $_->unix_group) : ()
+			} @entries
+	};
 	
-	my $umap= join("", map { (defined $_->{unix_uid} && defined $_->{unix_user})? ($_->{unix_uid}."\0" => $_->{unix_user}."\0") : () } @$entryList);
-	my $gmap= join("", map { (defined $_->{unix_gid} && defined $_->{unix_group})? ($_->{unix_gid}."\0" => $_->{unix_group}."\0") : () } @$entryList);
-	
-	my $ret= "CAS_Dir 14 File::CAS::Dir::Unix\n"
-		.pack('NNC', length($umap), length($gmap), length($defaultMeta))
-		.$umap.$gmap.$defaultMeta;
-	
-	for my $e (sort {$a->{name} cmp $b->{name}} @$entryList) {
-		my $code= $_TypeToCode{$e->{type}}
-			or croak "Unknown directory entry type: $e->{type}";
+	my $meta= JSON->new->utf8->encode($metadata);
+	my $ret= "CAS_Dir 04 Unix\n"
+		.pack('N', length($meta)).$meta;
+
+	# Now, build a nice compact string for each entry.
+	for my $e (sort {$a->name cmp $b->name} @entries) {
+		my $code= $_TypeToCode{$e->type}
+			or croak "Unknown directory entry type: ".$e->type;
+
+		my $ref= $e->ref;
+		defined $ref or $ref= '';
 		
-		my $val= $e->{$_ValFieldForType{$code}};
-		defined $val or $val= '';
-		
-		my @meta= map { defined($e->{$_})? $e->{$_} : '' } @fieldOrder[3..$#fieldOrder];
-		$meta[3]= '' if $meta[3] eq $def_uid;
-		$meta[4]= '' if $meta[4] eq $def_gid;
-		$meta[5]= '' if $meta[5] eq ($code eq 'd'? $def_dmode : $def_fmode);
-		$meta[9]= '' if $meta[9] eq $def_dev;
-		my $metaStr= join("\0", @meta)."\0";
-		
-		croak "Name too long: '$e->{name}'" if length($e->{name}) > 255;
-		croak "Value too long: '$val'" if length($val) > 255;
-		croak "Metadata too long: '$metaStr'" if length($metaStr) > 255;
-		$ret .= pack('CCCA', length($e->{name}), length($val), length($metaStr), $code).$e->{name}."\0".$val."\0".$metaStr;
+		my @meta= map { defined($e->$_)? $e->$_ : '' } @fieldOrder[3..$#fieldOrder];
+		$meta[1]= '' if $meta[1] eq $def_uid;
+		$meta[2]= '' if $meta[2] eq $def_gid;
+		$meta[3]= '' if $meta[3] eq ($code eq 'd'? $def_dmode : $def_fmode);
+		$meta[7]= '' if $meta[7] eq $def_dev;
+		my $meta_str= join("\0", @meta);
+
+		my $name= $e->name;
+		utf8::encode($name) if utf8::is_utf8($name);
+		utf8::encode($ref)  if utf8::is_utf8($ref);
+		croak "Name too long: '$name'" if length($name) > 255;
+		croak "Value too long: '$ref'" if length($ref) > 255;
+		croak "Metadata too long" if length($meta_str) > 255;
+		$ret .= pack('CCCA', length($name), length($ref), length($meta_str), $code).$name."\0".$ref."\0".$meta_str."\0";
 	}
-	
+	croak "Accidental unicode concatenation"
+		if utf8::is_utf8($ret);
 	$ret;
 }
 
-=head2 $class->_ctor( \%params )
-
-Private-ish constructor.  Like "new" with no error checking, and requires a blessable hashref.
-
-Defined parameters are "file" and "format".
-
-=cut
-sub _ctor {
-	my ($class, $params)= @_;
-	bless $params, $class;
-}
-
-sub _build__entries {
-	my $self= shift;
-	
-	$self->file->seek($self->_headerLenForFormat($self->{format}))
-		or croak "seek: $!";
-	
-	my (@entries, $buf, $pos);
-	
-	# first, pull out the metadata, which includes the UID map, the GID map, and the default attributes.
-	$self->file->readall($buf, 9);
-	my ($umapLen, $gmapLen, $defaultsLen)= unpack('NNC', $buf);
-	my $meta= $self->{_meta}= {};
-	
-	$self->file->readall($buf, $umapLen);
-	$meta->{umap}= length($buf)? { split("\0", substr($buf, 0, -1), -1) } : {};
-	
-	$self->file->readall($buf, $gmapLen);
-	$meta->{gmap}= length($buf)? { split("\0", substr($buf, 0, -1), -1) } : {};
-	
-	$self->file->readall($buf, $defaultsLen);
-	@{$meta}{qw:def_uid def_gid def_fmode def_dmode def_dev:}= split("\0", substr($buf, 0, -1), -1);
-	
-	# make sure we got values for all of the defaults
-	defined $meta->{def_dev}
-		or croak "Error in encoded directory metadata: '".$self->file->hash."'";
-	
-	while (!$self->file->eof) {
-		$self->file->readall($buf, 4);
-		my ($nameLen, $valLen, $metaLen, $code)= unpack('CCCA', $buf);
-		$self->file->readall($buf, $nameLen+$valLen+$metaLen+2);
-		push @entries, bless [
-			$meta,
-			$code,
-			substr($buf, 0, $nameLen),
-			substr($buf, $nameLen+1, $valLen),
-			split("\0", substr($buf, $nameLen+$valLen+2, -1), -1),
-			], __PACKAGE__.'::Entry';
+sub _deserialize {
+	my ($self, $params)= @_;
+	my $handle= $params->{handle};
+	if (!$handle) {
+		if (defined $params->{bytes}) {
+			open($handle, '<', \$params->{bytes})
+				or croak "can't open handle to scalar";
+		}
+		else {
+			$handle= $self->file->open;
+		}
 	}
-	$self->file->close; # we're most likely done with it
-	\@entries;
+
+	my $header_len= $self->_calc_header_length($self->format);
+	seek($handle, $header_len, 0) or croak "seek: $!";
+
+	my (@entries, $buf, $pos);
+
+	# first, pull out the metadata, which includes the UID map, the GID map, and the default attributes.
+	$self->_readall($handle, $buf, 4);
+	my ($dirmeta_len)= unpack('N', $buf);
+	$self->_readall($handle, my $json, $dirmeta_len);
+	my $meta= $self->{_metadata}= JSON->new->utf8->canonical->decode($json);
+
+	# Quick sanity checks
+	exists $meta->{_}{def}{uid}
+		and ref $meta->{_}{umap}
+		and ref $meta->{_}{gmap}
+		or croak "Incorrect directory metadata";
+
+	while (!eof $handle) {
+		$self->_readall($handle, $buf, 4);
+		my ($name_len, $ref_len, $meta_len, $code)= unpack('CCCA', $buf);
+		$self->_readall($handle, $buf, $name_len+$ref_len+$meta_len+3);
+		my @fields= ( map { length($_)? $_ : undef }
+			$meta->{_},
+			$code,
+			substr($buf, 0, $name_len),
+			substr($buf, $name_len+1, $ref_len),
+			split("\0", substr($buf, $name_len+$ref_len+2, $meta_len), -1),
+		);
+		push @entries, bless(\@fields, __PACKAGE__.'::Entry');
+	}
+	close $handle;
+	$self->{_entries}= \@entries;
 }
 
-sub _entries {
-	$_[0]{_entries} ||= $_[0]->_build__entries();
+sub _entries { $_[0]{_entries} }
+
+sub iterator {
+	return DataStore::CAS::FS::Dir::EntryIter->new($_[0]->_entries);
 }
 
-sub _entryHash {
-	$_[0]{_entryHash} ||= { map { $_->name => $_ } @{$_[0]->_entries} };
+sub _entry_name_map {
+	$_[0]->{_entry_name_map} ||= { map { $_->name => $_ } @{$_[0]->_entries} };
 }
+
 
 =head2 $ent= $dir->getEntry($name)
 
 Get a directory entry by name.
 
 =cut
-sub getEntry {
-	$_[0]->_entryHash->{$_[1]};
+sub get_entry {
+	$_[0]->_entry_name_map->{$_[1]};
 }
 
 
-package File::CAS::Dir::Unix::Entry;
+package DataStore::CAS::FS::Dir::Unix::Entry;
 use strict;
 use warnings;
-
-use File::CAS::Dir;
-our @ISA=( 'File::CAS::Dir::Entry' );
+use parent 'DataStore::CAS::FS::Dir::Entry';
 
 sub _dirmeta        { $_[0][0] }
 sub type            { $_CodeToType{$_[0][1]} }
 sub name            { $_[0][2] }
-sub _value          { $_[0][3] }
+sub ref             { $_[0][3] }
 sub size            { $_[0][4] }
-sub unix_uid        { length($_[0][5])? $_[0][5] : $_[0][0]{def_uid} }
-sub unix_gid        { length($_[0][6])? $_[0][6] : $_[0][0]{def_gid} }
-sub unix_mode       { length($_[0][7])? $_[0][7] : $_[0][0]{($_[0][1] eq 'd'? 'def_dmode':'def_fmode')} }
+sub unix_uid        { length($_[0][5])? $_[0][5] : $_[0][0]{def}{uid} }
+sub unix_gid        { length($_[0][6])? $_[0][6] : $_[0][0]{def}{gid} }
+sub unix_mode       { length($_[0][7])? $_[0][7] : $_[0][0]{def}{($_[0][1] eq 'd'? 'dmode':'fmode')} }
 sub unix_atime      { $_[0][8] }
 sub unix_mtime      { $_[0][9] }
 sub unix_ctime      { $_[0][10] }
-sub unix_dev        { length($_[0][11])? $_[0][11] : $_[0][0]{def_dev} }
+sub unix_dev        { length($_[0][11])? $_[0][11] : $_[0][0]{def}{dev} }
 sub unix_inode      { $_[0][12] }
 sub unix_nlink      { $_[0][13] }
 sub unix_blocksize  { $_[0][14] }
-sub unix_blockcount { $_[0][15] }
+sub unix_blocks     { $_[0][15] }
 
 *modify_ts = *unix_mtime;
-sub hash            { ($_[0][1] eq 'f' || $_[0][1] eq 'd')? $_[0][3] : undef }
-sub linkTarget      { $_[0][1] eq 'l'? $_[0][3] : undef }
-sub device          { ($_[0][1] eq 'b' || $_[0][1] eq 'c')? $_[0][3] : undef }
 sub unix_user       { $_[0][0]{umap}{ $_[0]->unix_uid } }
 sub unix_group      { $_[0][0]{gmap}{ $_[0]->unix_gid } }
+
+sub as_hash {
+	return { map { $_ => $_[0]->$_() } qw: type name ref size unix_uid
+		unix_gid unix_mode unix_atime unix_mtime unix_ctime unix_dev
+		unix_inode unix_nlink unix_blocksize unix_blocks : };
+}
 
 1;

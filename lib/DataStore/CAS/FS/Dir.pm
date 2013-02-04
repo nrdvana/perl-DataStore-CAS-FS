@@ -4,6 +4,8 @@ use strict;
 use warnings;
 use Carp;
 use Try::Tiny;
+require JSON;
+require MIME::Base64;
 
 our $VERSION= 1.0000;
 
@@ -191,8 +193,6 @@ sub SerializeEntries {
 	my ($class, $entryList, $metadata)= @_;
 	ref($metadata) eq 'HASH' or croak "Metadata must be a hashref"
 		if $metadata;
-	require JSON;
-	require MIME::Base64;
 	my $enc= JSON->new->utf8->canonical;
 	my $json= $enc->encode($metadata || {});
 	my $ret= "CAS_Dir 00 \n"
@@ -228,7 +228,7 @@ unique names.  (in particular, because of case sensitivity rules)
 =cut
 
 sub iterator {
-	return DataStore::CAS::FS::Dir::EntryIter->new($_[0], $_[0]{_entries});
+	return DataStore::CAS::FS::Dir::EntryIter->new($_[0]{_entries});
 }
 
 =head2 $ent= $dir->get_entry($name)
@@ -327,7 +327,6 @@ sub _deserialize {
 		$bytes= <$handle>;
 	}
 
-	require JSON;
 	my $enc= JSON->new->utf8->canonical;
 	my $data= $enc->decode($bytes);
 	$self->{metadata}= $data->{metadata} or croak "Directory data is missing 'metadata'";
@@ -472,6 +471,7 @@ sub eof {
 }
 
 
+$INC{'DataStore/CAS/FS/Dir/Entry.pm'}= 1;
 package DataStore::CAS::FS::Dir::Entry;
 use strict;
 use warnings;
@@ -504,13 +504,13 @@ One of "file", "dir", "symlink", "blockdev", "chardev", "pipe", "socket".
 Note that 'symlink' refers only to UNIX style symlinks.
 As support for other systems' symbolic links is added, new type strings will
 be added to this list, and the type will determine how to interpret the
-path_ref value.
+C<ref> value.
 
-=head2 hash
+=head2 ref
 
 The store's checksum of the data in the referenced file or directory.
 
-This should by undef for any type other than 'file' or 'dir'
+For symlink, the path.  For blockdev and chardev, the device node.
 
 =head2 size
 
@@ -524,12 +524,6 @@ The timestamp of the creation of the file, expressed in Unix Epoch seconds.
 =head2 modify_ts
 
 The timestamp the file was last modified, expressed in Unix Epoch seconds.
-
-=head2 path_ref
-
-The target of a symbolic link, in a notation that is interpreted based on the
-'type' of the link.  UNIX symlinks are always interpreted as path elements
-separated by '/' and absolute paths represented by a leading '/'.
 
 =head2 unix_uid
 
@@ -603,7 +597,7 @@ sub new {
 #  arrays, so our accessor pulls from the 'as_hash' so that it can safely
 #  return undef if the subclass doesn't support it.
 { eval "sub $_ { \$_[0]->as_hash->{$_} }; 1" or die $@
-  for qw: name type hash size create_ts modify_ts path_ref
+  for qw: name type ref size create_ts modify_ts
 	unix_uid unix_user unix_gid unix_group unix_mode unix_atime unix_ctime
 	unix_mtime unix_dev unix_inode unix_nlink unix_blocksize unix_blocks :;
 }

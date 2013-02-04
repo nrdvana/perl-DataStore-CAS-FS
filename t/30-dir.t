@@ -16,15 +16,24 @@ my %metadata= (
 	baz => 3
 );
 my @entries= (
-	{ type => 'file',     name => 'a', size => 10, hash => '0000' },
-	{ type => 'file',     name => 'b', size => 10, hash => '1111', path_ref => 'abcdef' },
-	{ type => 'symlink',  name => 'c', size => 10, hash => '2222', path_ref => 'fedcba' },
-	{ type => 'blockdev', name => 'd', size => 10000, hash => '3333', path_ref => '', device => '1234' },
-	{ type => 'chardev',  name => 'e', size => 0, hash => undef, device => '4321' },
-	{ type => 'pipe',     name => 'f', size => 1, hash => 'dfljsdlfkj' },
-	{ type => 'socket',   name => 'g', size => 1, hash => 'sfsdfsdf' },
+	{ type => 'file',     name => 'a', size => 10,    ref => '0000',   foo => 42, sdlfjskldf => 'sldfjhlsdkfjh' },
+	{ type => 'pipe',     name => 'f', size => 1,     ref => undef,    bar => 'xyz' },
+	{ type => 'blockdev', name => 'd', size => 10000, ref => '1234',   },
+	{ type => 'file',     name => 'b', size => 10,    ref => '1111',   1 => 2, 3 => 4, 5 => 6},
+	{ type => 'chardev',  name => 'e', size => 0,     ref => '4321',   },
+	{ type => 'symlink',  name => 'c', size => 10,    ref => 'fedcba', },
+	{ type => 'socket',   name => 'g', size => 1,     ref => undef,    },
 );
-my $hashOfSerialized= '8a3185b669648e602be3eaf5267666ea9146902f';
+my @expected= (
+	{ type => 'file',     name => 'a', size => 10,    ref => '0000',   foo => 42, sdlfjskldf => 'sldfjhlsdkfjh' },
+	{ type => 'file',     name => 'b', size => 10,    ref => '1111',   1 => 2, 3 => 4, 5 => 6},
+	{ type => 'symlink',  name => 'c', size => 10,    ref => 'fedcba', },
+	{ type => 'blockdev', name => 'd', size => 10000, ref => '1234',   },
+	{ type => 'chardev',  name => 'e', size => 0,     ref => '4321',   },
+	{ type => 'pipe',     name => 'f', size => 1,     ref => undef,    bar => 'xyz' },
+	{ type => 'socket',   name => 'g', size => 1,     ref => undef,    },
+);
+my $hashOfSerialized= '7164cf0ecde9cbd3ef0b97fc955512155b97d2d8';
 
 my $empty_dir= DataStore::CAS::FS::Dir->SerializeEntries([], {});
 is( Digest->new('SHA-1')->add($empty_dir)->hexdigest(), $nullDirHash, 'null dir serialized correctly' )
@@ -45,7 +54,7 @@ $dir= new_ok( 'DataStore::CAS::FS::Dir', [ file => $file, data => $ser ], 'test 
 
 is_deeply( $dir->metadata, \%metadata, 'deserialized metadata are correct' )
 	or diag Dumper($dir->metadata);
-is_deeply( [ map { $_->as_hash } @{$dir->{_entries}} ], \@entries, 'deserialized entries are correct' )
+is_deeply( [ map { $_->as_hash } @{$dir->{_entries}} ], \@expected, 'deserialized entries are correct' )
 	or diag Dumper($dir->{_entries});
 
 ok( open( my $handle, '<', \$ser ), 'open memory stream' );
@@ -53,8 +62,16 @@ $dir= new_ok( 'DataStore::CAS::FS::Dir', [ file => $file, handle => $handle ], '
 
 is_deeply( $dir->metadata, \%metadata, 'deserialized metadata are correct' )
 	or diag Dumper($dir->metadata);
-is_deeply( [ map { $_->as_hash } @{$dir->{_entries}} ], \@entries, 'deserialized entries are correct' )
+is_deeply( [ map { $_->as_hash } @{$dir->{_entries}} ], \@expected, 'deserialized entries are correct' )
 	or diag Dumper($dir->{_entries});
+
+my $iter= $dir->iterator;
+for (@expected) {
+	ok( !$iter->eof, 'not eof yet' );
+	is( $iter->next->name, $_->{name}, 'iterator matches' );
+}
+ok( $iter->eof, 'eof at end' );
+is( $iter->next, undef, 'and next returns undef' );
 
 # unicode testing ----------------------
 
