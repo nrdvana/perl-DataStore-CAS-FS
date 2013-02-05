@@ -4,6 +4,7 @@ use strict;
 use warnings;
 use Carp;
 use Try::Tiny;
+use Module::Runtime 'use_module', 'check_module_name';
 use DataStore::CAS;
 use DataStore::CAS::FS::Dir;
 use DataStore::CAS::FS::Scanner;
@@ -196,7 +197,8 @@ sub new {
 	if (ref $p{store} eq 'HASH') {
 		$p{store}= { %{$p{store}} }; # clone before we make changes
 		my $class= delete $p{store}{CLASS} || 'DataStore::CAS::Simple';
-		_require_class($class, delete $p{store}{VERSION});
+		check_module_name($class);
+		use_module($class, delete $p{store}{VERSION});
 		$class->isa('DataStore::CAS')
 			or croak "'$class' is not a valid CAS class\n";
 		$p{store}= $class->new($p{store});
@@ -210,7 +212,8 @@ sub new {
 	if (ref $p{scanner} eq 'HASH') {
 		$p{scanner}= { %{$p{scanner}} }; # clone before we make changes
 		my $class= delete $p{scanner}{CLASS} || 'DataStore::CAS::FS::Scanner';
-		_require_class($class, delete $p{scanner}{VERSION});
+		check_module_name($class);
+		use_module($class, delete $p{scanner}{VERSION});
 		$class->isa('DataStore::CAS::FS::Scanner')
 			or croak "'$class' is not a valid Scanner class\n";
 		$p{scanner}= $class->new($p{scanner});
@@ -518,45 +521,6 @@ sub _ctor {
 	$p->{_dircache_recent_idx}= 0;
 	$p->{_dircache_recent_mask}= 63;
 	bless $p, $class;
-}
-
-=head2 Utility functions
-
-=over
-
-=item _require_class( $pkg, $version )
-
-Dynamically load a class if needed, and check its version.
-We test whether a class is loaded with the '->new' method,
-because every class that we dynamically load is an object.
-
-=cut
-
-sub _require_class {
-	my ($pkg, $version)= @_;
-
-	# We're loading user-supplied class names.  Protect against code injection.
-	($pkg =~ /^[A-Za-z][A-Za-z0-9_]*(::[A-Za-z][A-Za-z0-9_]*)*$/)
-		or croak "Invalid perl package name: '$pkg'\n";
-
-	unless ($pkg->can('new')) {
-		my ($fail, $err)= do {
-			local $@;
-			((not eval "require $pkg;"), $@);
-		};
-		die $err if $fail;
-	}
-	
-	if (defined $version) {
-		defined *{$pkg.'::VERSION'}
-			or croak "Package '$pkg' is missing a VERSION\n";
-		no strict 'refs';
-		my $v= ${$pkg.'::VERSION'};
-		($v >= $version)
-			or croak "Package '$pkg' version '$v' is less than required '$version'\n";
-	}
-	
-	1;
 }
 
 1;

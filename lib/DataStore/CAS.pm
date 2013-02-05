@@ -45,7 +45,7 @@ This has applications in backups and content distribution.
 =head1 SYNOPSIS
 
   # Create a new CAS which stores everything in plain files.
-  my $cas= DataStore::CAS->new(
+  my $cas= DataStore::CAS::Simple->new(
     path   => './foo/bar',
     create => 1,
     digest => 'SHA-256',
@@ -57,12 +57,13 @@ This has applications in backups and content distribution.
   # Retrieve a reference to that content
   my $file= $cas->get($hash);
   
+  # Inspect the file's attributes
+  $file->size < 1024*1024 or die "Use a smaller file";
+  
   # Open a handle to that file (possibly returning a virtual file handle)
   my $handle= $file->open;
-  
-  # Read from the handle object with any of the standard perl functions
   my @lines= <$handle>;
-  
+
 =head1 ATTRIBUTES
 
 =head2 digest
@@ -462,11 +463,12 @@ sub open {
 our $AUTOLOAD;
 sub AUTOLOAD {
 	my $self= $_[0];
-	my $attr= substr($AUTOLOAD, rindex($AUTOLOAD, ':'));
+	my $attr= substr($AUTOLOAD, rindex($AUTOLOAD, ':')+1);
 	return $self->{$attr} if exists $self->{$attr};
 	my $method= $self->store->can("_file_$attr");
 	return $method($self->store, @_) if $method;
-	croak "Unsupported method '$AUTOLOAD'";
+	croak "Unsupported method '$AUTOLOAD'"
+		unless $attr eq 'DESTROY';
 }
 
 1;
