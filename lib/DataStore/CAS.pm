@@ -4,6 +4,8 @@ use strict;
 use warnings;
 use Carp;
 use Try::Tiny;
+require Scalar::Util;
+require Symbol;
 
 =head1 NAME
 
@@ -293,12 +295,13 @@ See '->put' for the discussion of 'flags'.
 
 # put_handle
 
+=head2 new_write_handle
+
 =head2 validate( $digest_hash [, %flags ])
 
-Validate one or more of the entries in the CAS.  This is used to detect
-whether the storage has become corrupt.  Returns 1 if the hash checks
-out ok, and returns 0 if it fails, and returns undef if the hash doesn't
-exist.
+Validate an entry of the CAS.  This is used to detect whether the storage
+has become corrupt.  Returns 1 if the hash checks out ok, and returns 0 if
+it fails, and returns undef if the hash doesn't exist.
 
 Like the 'put' method, you can pass a hashref in $flags{stats} which
 will receive information about the file.  This can be used to implement
@@ -401,7 +404,9 @@ are 'raw' by default.
 
 =cut
 
-# sub file_open
+sub _file_destroy {}
+
+sub _handle_destroy {}
 
 =head1 DataStore::CAS::File Wrappers
 
@@ -442,8 +447,6 @@ BEGIN { $INC{'DataStore/CAS/File.pm'}= 1; }
 package DataStore::CAS::File;
 use strict;
 use warnings;
-use Carp;
-use Try::Tiny;
 
 sub store { $_[0]{store} }
 sub hash  { $_[0]{hash} }
@@ -457,18 +460,107 @@ sub open {
 		if @_ > 1;
 	return $self->{store}->file_open($self, { layer => $_[0] })
 		if @_ == 1 and !ref $_[0];
-	croak "Wrong arguments to 'open'";
+	Carp::croak "Wrong arguments to 'open'";
 };
+
+sub DESTROY {
+	$_[0]{store}->_file_destroy(@_);
+}
 
 our $AUTOLOAD;
 sub AUTOLOAD {
-	my $self= $_[0];
 	my $attr= substr($AUTOLOAD, rindex($AUTOLOAD, ':')+1);
-	return $self->{$attr} if exists $self->{$attr};
-	my $method= $self->store->can("_file_$attr");
-	return $method($self->store, @_) if $method;
-	croak "Unsupported method '$AUTOLOAD'"
-		unless $attr eq 'DESTROY';
+	return $_[0]{$attr} if exists $_[0]{$attr};
+	unshift @_, $_[0]{store};
+	goto (
+		$_[0]->can("_file_$attr")
+		or Carp::croak "Can't locate object method \"_file_$attr\" via package \"".ref($_[0]).'"'
+	);
 }
+
+BEGIN { $INC{'DataStore/CAS/Handle.pm'}= 1; }
+package DataStore::CAS::Handle;
+use strict;
+use warnings;
+
+sub new {
+	my ($class, $cas, $value)= @_;
+	my $glob= bless Symbol::gensym(), $class;
+	${*$glob}= $cas;
+	%{*$glob}= %{$value||{}};
+	tie *$glob, "${class}::Tied", $glob;
+	$glob;
+}
+
+sub _store { ${*${$_[0]}} }  # the scalar field of the symbol points to the CAS object
+sub _data  { \%{*${$_[0]}} } # the hashref field of the symbol holds the fields of the handle
+
+sub close    { unshift @_, ${*{$_[0]}}; goto $_[0]->can('_handle_close') }
+sub eof      { unshift @_, ${*{$_[0]}}; goto $_[0]->can('_handle_eof') }
+sub seek     { unshift @_, ${*{$_[0]}}; goto $_[0]->can('_handle_seek') }
+sub tell     { unshift @_, ${*{$_[0]}}; goto $_[0]->can('_handle_tell') }
+sub read     { unshift @_, ${*{$_[0]}}; goto $_[0]->can('_handle_read') }
+sub readline { unshift @_, ${*{$_[0]}}; goto $_[0]->can('_handle_readline') }
+sub print    { unshift @_, ${*{$_[0]}}; goto $_[0]->can('_handle_print') }
+sub write    { unshift @_, ${*{$_[0]}}; goto $_[0]->can('_handle_write') }
+sub DESTROY  { unshift @_, ${*{$_[0]}}; goto $_[0]->can('_handle_destroy') }
+
+our $AUTOLOAD;
+sub AUTOLOAD {
+	unshift @_, ${*${$_[0]}}; # my ($cas, $value)
+	my $attr= substr($AUTOLOAD, rindex($AUTOLOAD, ':')+1);
+	goto (
+		$_[0]->can("_handle_$attr")
+		or Carp::croak "Can't locate object method \"_handle_$attr\" via package \"".ref($_[0]).'"'
+	);
+}
+
+#
+# The following are some default implementations to make subclassing less cumbersome.
+#
+
+# virtual handles are unlikely to have one
+sub fileno { -1 }
+
+# I'm not sure why anyone would ever want this function, but I'm adding
+#  it for completeness.
+sub getc {
+	my $c;
+	$_[0]->read($c, 1)? $c : undef;
+}
+
+# same API...
+*sysread= *read;
+*syswrite= *write;
+*sysseek= *seek;
+
+# as if anyone would want to write their own printf implementation...
+sub printf {
+	@_= ($_[0], sprintf($_[1], $_[2..$#_]));
+	goto $_[0]->can('print');
+}
+
+package DataStore::CAS::Handle::Tied;
+use strict;
+use warnings;
+
+sub TIEHANDLE {
+	my ($class, $ref)= @_;
+	Scalar::Util::weaken($ref);
+	bless \$ref, $class;
+}
+
+sub WRITE    { unshift @_, ${(shift)}; goto $_[0]->can('write') }
+sub PRINT    { unshift @_, ${(shift)}; goto $_[0]->can('print') }
+sub PRINTF   { unshift @_, ${(shift)}; goto $_[0]->can('printf') }
+sub READ     { unshift @_, ${(shift)}; goto $_[0]->can('read') }
+sub READLINE { unshift @_, ${(shift)}; goto $_[0]->can('readline') }
+sub GETC     { unshift @_, ${(shift)}; goto $_[0]->can('getc') }
+sub EOF      { unshift @_, ${(shift)}; goto $_[0]->can('eof') }
+sub CLOSE    { unshift @_, ${(shift)}; goto $_[0]->can('close') }
+sub FILENO   { unshift @_, ${(shift)}; goto $_[0]->can('fileno') }
+sub SEEK     { unshift @_, ${(shift)}; goto $_[0]->can('seek') }
+sub TELL     { unshift @_, ${(shift)}; goto $_[0]->can('tell') }
+# DESTROY is handled by the encapsulating blessed globref.
 
 1;
