@@ -56,7 +56,7 @@ dies_like( sub{ $h->nonexistent }, qr/Can't.*method.*nonexistent.*main/, 'nonexi
 
 # Make sure DESTROY gets called (no circular refs), and that the chaining works
 
-$self= undef;
-is( $instance_count, 0, 'no circular refs' );
+$h= undef;
+is( $instance_count, 0, 'no circular refs in handle' );
 
 done_testing;

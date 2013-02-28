@@ -4,11 +4,9 @@ use strict;
 use warnings;
 use Carp;
 use Try::Tiny;
-use Module::Runtime 'use_module', 'check_module_name';
 use DataStore::CAS;
 use DataStore::CAS::FS::Dir;
-use DataStore::CAS::FS::Scanner;
-use File::Spec::Functions 'catfile', 'catdir', 'canonpath';
+require File::Spec;
 
 our $VERSION= '0.0100';
 
@@ -18,19 +16,20 @@ DataStore::CAS::FS - Filesystem on top of Content-Addressable Storage
 
 =head1 SYNOPSIS
 
-  # Create a new CAS::FS backed by 'DataStore::CAS::Simple', which stores
-  #   everything in plain files.
+  # Create a new empty filesystem
   my $casfs= DataStore::CAS::FS->new(
-    store => {
-      CLASS => 'Simple',
+    store => DataStore::CAS::Simple->new(
       path => './foo/bar',
       create => 1,
       digest => 'SHA-256'
-    }
+    )
   );
   
-  # Create a CAS::FS on an existing store
-  $casfs= DataStore::CAS::FS->new( store => $cas );
+  # Open a multi-volume filesystem on an existing store
+  $casfs= DataStore::CAS::FS->new( store => $cas, volume_dir => $digest_hash );
+  
+  # Open a single root directory on an existing store
+  $casfs= DataStore::CAS::FS->new( store => $cas, root_dir => $digest_hash );
   
   # --- These pass through to the $cas module
   
@@ -38,27 +37,18 @@ DataStore::CAS::FS - Filesystem on top of Content-Addressable Storage
   $hash= $casfs->put_file("./foo/bar/baz");
   $file= $casfs->get($hash);
   
-  # --- These are the extensions that store directory hierarchies
+  # Open a path within the filesystem
+  $handle= $casfs->path('','1','2','3','myfile')->open;
   
-  # Recursively store directories from the real filesystem.
-  # Make sure not to include the Store's path!
-  my $root_hash= $casfs->put_dir("/home/my_user/stuff");
+  # Write out a new tree, composed of this tree and some alterations.
+  # (returns a new FS object to view that tree)
+  $casfs_2= $casfs->rewrite(
+    paths => [
+      [ '', '1', '2', '3', [ name => 'myfile', hash => $some_new_file ] ],
+      [ '', '1', '2', [ name => 'myfile_copy', hash => $some_new_file ] ],
+    ],
+  );
   
-  # Store the same dir again, but only look at files whose size or
-  #  timestamp have changed
-  my $root_hash= $casfs->put_dir("/home/my_user/stuff",
-                                 { dir_hint => $root_hash });
-  
-  # Fetch and decode a directory by its hash
-  my $dir= $cas->get_dir($root_hash);
-  
-  # Walk the directory to a known path
-  my $stuff= $dir->subdir('home','my_user')->subdir('stuff');
-  
-  # Same as above, but returns a DataStore::CAS::File instead of a
-  #  decoded DataStore::CAS::FS::Dir
-  my $stuff= $dir->file('home','my_user','stuff');
-
 =head1 DESCRIPTION
 
 DataStore::CAS::FS extends the content-addressable API to support directory
@@ -102,18 +92,15 @@ directories in an efficient manner for your system.
 
 =head2 store
 
-Read-only.  An instance of a class implementing 'DataStore::CAS'
+Read-only.  An instance of a class implementing 'DataStore::CAS'.
 
-=head2 scanner
+=head2 volume_dir
 
-Read-write.  An instance of DataStore::CAS::FS::Scanner, or subclass.
-It is responsible for scanning real filesystem directories during "putDir".
-If you didn't specify one in the constructor, one will be selected
-automatically.
-
-You may alter this instance or replace it at runtime however you like.
-Just be aware that encoding a directory twice with different scanner settings
-might result in different encodings, which would get stored twice.
+Read-only.  A directory which contains the volume roots.  For UNIX, this is
+a directory that contains one entry with an empty name (""), which is the
+UNIX root dir.  For backups made on Windows, the volume root might contain
+'C', 'D', or etc.  This only really matters for symlinks; UNIX symlinks will
+always refer to the '' volume.
 
 =head2 hash_of_null
 
@@ -135,23 +122,14 @@ value instead of recalculating the hash of an empty dir.
 
 =cut
 
-sub store { $_[0]{store} }
+sub store             { $_[0]{store} }
+sub volume_dir        { $_[0]{volume_dir} }
+sub root_entry        { $_[0]{root_entry} }
 
-sub scanner {
-	$_[0]{scanner}= $_[1] if defined $_[1];
-	$_[0]{scanner}
-}
+sub hash_of_null      { $_[0]->store->hash_of_null }
+sub hash_of_empty_dir { $_[0]{hash_of_empty_dir} }
 
-sub hash_of_null { $_[0]{store}->hash_of_null }
-
-sub hash_of_empty_dir {
-	my $self= shift;
-	return $self->{hash_of_empty_dir} ||=
-		do {
-			my $empty= DataStore::CAS::FS::Dir->SerializeEntries([],{});
-			$self->put_scalar($empty);
-		};
-}
+sub dir_cache         { $_[0]{dir_cache} }
 
 =head1 METHODS
 
@@ -163,77 +141,130 @@ Parameters:
 
 =item store - required
 
-It may be a class name like 'Simple' which refers to the
-namespace DataStore::CAS::, or it may be a hashref of
-parameters including the key 'CLASS', or it may be a fully
-constructed object.
+An instance of DataStore::CAS
 
-=item scanner - optional
+=item volume_dir - required
 
-Allows you to specify a scanner object which is used during
-"put_dir" to collect metadata about the directory entries.
-May be specified as a class name, a hashref including the
-key 'CLASS', or a fully constructed object.
-
-=item filter - optional
-
-Alias for scanner->filter.  This object will become or
-replace the filter in the scanner during the constructor.
+An instance of DataStore::CAS::FS::Dir, or an instance of DataStore::CAS::File
+which contains one, or a digest hash of that File within the store.
 
 =back
 
 =cut
 
+sub _calc_empty_dir_hash {
+	my ($class, $store)= @_;
+	my $empty= DataStore::CAS::FS::Dir->SerializeEntries([],{});
+	return $store->put_scalar($empty);
+}
+
 sub new {
 	my $class= shift;
 	my %p= ref($_[0])? %{$_[0]} : @_;
-	
-	defined $p{store} or croak "Missing required parameter 'store'";
-	
-	# coercion of store parameters to Store object
-	if (!ref $p{store}) {
-		$p{store}= { CLASS => $p{store} };
+
+	croak "Missing required parameter 'store'"
+		unless defined $p{store};
+	croak "Invalid 'store' object"
+		unless ref($p{store}) && $p{store}->can('get');
+
+	# Create dircache if not given.
+	$p{dir_cache} ||= DataStore::CAS::FS::DirCache->new();
+
+	$p{hash_of_empty_dir}= $class->_calc_empty_dir_hash($p{store})
+		unless defined $p{hash_of_empty_dir};
+
+	if (defined $p{volume_dir}) {
+		# Load directory, if they gave us a hash or File.
+		if (!ref $p{volume_dir} or !$p{volume_dir}->can('get_entry')) {
+			my $hash= ref($p{volume_dir}) && ref($p{volume_dir})->can('hash')
+				? $p{volume_dir}->hash
+				: "$p{volume_dir}";
+			my $dir= $p{dir_cache}->get($hash);
+			if (!$dir) {
+				my $file= $p{store}->get($hash)
+					or croak "Volume directory '$hash' does not exist in CAS";
+				# Wrap the dir decoding with try/catch so that we can emit a better error message
+				try {
+					$dir= DataStore::CAS::FS::Dir->new($file);
+				} catch {
+					croak "Parameter 'volume_dir' does not refer to a valid directory: $_";
+				};
+				$p{dir_cache}->put($dir);
+			}
+			$p{volume_dir}= $dir;
+		}
 	}
-	if (ref $p{store} eq 'HASH') {
-		$p{store}= { %{$p{store}} }; # clone before we make changes
-		my $class= delete $p{store}{CLASS} || 'DataStore::CAS::Simple';
-		check_module_name($class);
-		use_module($class, delete $p{store}{VERSION});
-		$class->isa('DataStore::CAS')
-			or croak "'$class' is not a valid CAS class\n";
-		$p{store}= $class->new($p{store});
-	}
 	
-	# coercion of scanner parameters to Scanner object
-	$p{scanner} ||= { };
-	if (!ref $p{scanner}) {
-		$p{scanner}= { CLASS => $p{scanner} };
+	# Root is a more flexible parameter than 'root_entry'.  If they specify
+	# it, we convert it to the equivalent root_entry parameter.
+	if (defined $p{root}) {
+		defined $p{root_entry}
+			and croak "Specify only one of 'root' or 'root_entry'";
+
+		my $root= delete $p{root};
+		my $hash;
+
+		# Is it a scalar digest hash?
+		if (!ref $root) {
+			$hash= $root;
+		}
+		# Is is a Dir::Entry? or a hashref intended to be one?
+		elsif (ref $root eq 'HASH' or ref($root)->isa('DataStore::CAS::FS::Dir::Entry')) {
+			$p{root_entry}= $root;
+		}
+		# Is it a ::File or ::Dir object?
+		elsif (ref($root)->can('hash')) {
+			$hash= $root->hash;
+		}
+		else {
+			# Try stringifying it and looking it up in the CAS
+			$hash= "$root";
+		}
+		
+		if (defined $hash) {
+			$p{root_entry}= { type => 'dir', name => '', ref => $hash };
+		}
 	}
-	if (ref $p{scanner} eq 'HASH') {
-		$p{scanner}= { %{$p{scanner}} }; # clone before we make changes
-		my $class= delete $p{scanner}{CLASS} || 'DataStore::CAS::FS::Scanner';
-		check_module_name($class);
-		use_module($class, delete $p{scanner}{VERSION});
-		$class->isa('DataStore::CAS::FS::Scanner')
-			or croak "'$class' is not a valid Scanner class\n";
-		$p{scanner}= $class->new($p{scanner});
+
+	if (defined $p{root_entry}) {
+		if (ref $p{root_entry} eq 'HASH') {
+			$p{root_entry}= DataStore::CAS::FS::Dir::Entry->new({
+				type => 'dir',
+				name => '',
+				ref => $p{hash_of_empty_dir},
+				%{$p{root_entry}}
+			});
+		}
 	}
-	
+
 	$class->_ctor(\%p);
+}
+
+sub get_volume_root {
+	my ($self, $volume_name)= @_;
+	$volume_name= '' unless defined $volume_name;
+	# If this FS instance has volume support, volume_dir will be a Dir object
+	# and root_entry will be undef.  Else root_entry will be a Dir::Entry and
+	# volume_dir will be undef.  In the second case, we pretend that there is
+	# a volume_dir with one entry named ''.
+	return $self->volume_dir
+		? $self->volume_dir->get_entry($volume_name)
+		: $volume_name eq ''
+			? $self->{root_entry}
+			: undef;
 }
 
 =head2 get( $hash [, \%flags ])
 
-This passes through to DataStore::CAS, which looks up the hash and either
-returns a File object or undef.
+Alias for store->get
 
 =cut
 
 sub get {
-	(shift)->{store}->get(@_);
+	(shift)->store->get(@_);
 }
 
-=head2 get_dir( $hash [, \%flags ])
+=head2 get_dir( $hash|$file [, \%flags ])
 
 This returns a de-serialized directory object found by its hash.  It is a
 shorthand for 'get' on the Store, and deserializing enough of the result to
@@ -243,65 +274,34 @@ Also, this method caches recently used directory objects, since they are
 immutable. (but woe to those who break the API and modify their directory
 objects!)
 
-(Directories in DataStore::CAS::FS are just files which can be decoded by
- DataStore::CAS::FS::Dir (or various pluggable subclasses) to produce a set
- of DataStore::CAS::FS::Dir::Entry objects, which reference other hashes,
- which might be files or directories or other things)
- 
-Returns undef if the entry doesn't exist, but dies if an error occurs
-while decoding one that exists.
+Returns undef if the digest hash isn't in the store, but dies if an error
+occurs while decoding one that exists.
 
 =cut
 
 sub get_dir {
-	my ($self, $hash, $flags)= @_;
-	my $dircache= $self->{_dircache};
-	my $dir= $dircache->{$hash};
-	unless (defined $dir) {
-		my $file= $self->get($hash) or return undef;
-		$dir= DataStore::CAS::FS::Dir->new($file);
-		Scalar::Util::weaken($dircache->{$hash}= $dir);
-		# We don't want a bunch of dead keys laying around in our cache, so we use a clever trick
-		# of attaching an object to the directory whose destructor removes the key from our cache.
-		# We use a blessed coderef to prevent seeing circular references while debugging.
-		$dir->{_dircache_cleanup}=
-			bless sub { delete $dircache->{$hash} },
-				'DataStore::CAS::FS::DircacheCleanup';
-	}
-	# Hold a reference to any dir requested in the last N get_dir calls.
-	my $i= $self->{_dircache_recent_idx}++ & $self->{_dircache_recent_mask};
-	$self->{_dircache_recent}[$i]= $dir;
-	$dir;
-}
-
-package DataStore::CAS::FS::DircacheCleanup;
-
-sub DESTROY {
-	&{$_[0]}; # Our 'object' is actually a blessed coderef that removes us from the cache.
-}
-
-package DataStore::CAS::FS;
-
-sub _clear_dir_cache {
-	my ($self)= @_;
-	$self->{_dircache}= {};
-	$self->{_dircache_recent}= [];
-	$self->{_dircache_recent_idx}= 0;
+	my ($self, $hash_or_file, $flags)= @_;
+	my ($hash, $file)= (ref $hash_or_file and $hash_or_file->can('hash'))
+		? ( $hash_or_file->hash, $hash_or_file )
+		: ( $hash_or_file, undef );
+	
+	my $dir= $self->dir_cache->get($hash);
+	return $dir if defined $dir;
+	
+	# Return undef if the directory doesn't exist.
+	return undef
+		unless defined ($file ||= $self->store->get($hash));
+	
+	# Deserialize directory.  This can throw exceptions if it isn't a valid encoding.
+	$dir= DataStore::CAS::FS::Dir->new($file);
+	# Cache it
+	$self->dir_cache->put($dir);
+	return $dir;
 }
 
 =head2 put( $thing [, \%flags ] )
 
-Same as DataStore::CAS, but also accepts Path::Class::Dir objects
-which are passed to put_dir.
-
-=cut
-
-sub put {
-	if (ref $_[1]) {
-		goto $_[0]->can('put_dir') if ref($_[1])->isa('Path::Class::Dir');
-	}
-	(shift)->{store}->put(@_);
-}
+Alias for store->put
 
 =head2 put_scalar
 
@@ -321,100 +321,113 @@ Alias for store->validate
 
 =cut
 
-sub put_scalar { (shift)->{store}->put_scalar(@_) }
-sub put_file   { (shift)->{store}->put_file(@_) }
-sub put_handle { (shift)->{store}->put_handle(@_) }
-sub validate   { (shift)->{store}->validate(@_) }
+sub put        { (shift)->store->put(@_) }
+sub put_scalar { (shift)->store->put_scalar(@_) }
+sub put_file   { (shift)->store->put_file(@_) }
+sub put_handle { (shift)->store->put_handle(@_) }
+sub validate   { (shift)->store->validate(@_) }
 
-=head2 put_dir( $dir_path | Path::Class::Dir [, \%flags ] )
+=head2 path( \@path_names )
 
-Pass a directory to ->scanner->store_dir, which will store it and all
-subdirectories (minus those filtered by ->scanner->filter) into the CAS.
+Returns a DataStore::CAS::FS::Path object which provides frendly
+object-oriented access to several other methods of CAS::FS. This object does
+*nothing* other than curry parameters, for your convenience.  In particular,
+the path isn't resolved and might not be valid.
 
-Returns the digest hash of the serialized directory.
+See resolve_path for notes about @path_names.
 
-If $flags->{dir_hint} is given, it instructs the directory scanner to
-re-use the hashes of the old files whose name, size, and date match the
-current state of the directory, rather than re-hashing every single file.
-This makes scanning much faster, but removes the guarantee that you
-actually get a complete backup of your files.
-Also on the plus side, it reduces the wear and tear on your harddrive.
-(but irrelevant for solid state drives)
-
-dir_hint must be a DataStore::CAS::FS::Dir object or a hash of one that
-has been stored previously.
-
-=cut
-
-sub put_dir {
-	my ($self, $dir, $flags)= @_;
-	$self->scanner->store_dir($self, $dir, $flags->{dir_hint});
-}
-
-=head2 resolve_path( $root_entry, \@path_names, [ \$error_out ] )
+=head2 resolve_path( \@path_names [, \%flags ] )
 
 Returns an arrayref of DataStore::CAS::FS::Dir::Entry objects corresponding
-to the specified path, starting with $root_entry.  This function essentially
-performs the same operation as 'File::Spec->realpath', but for the virtual
-filesystem, and gives you an array of directory entries instead of a string.
+to the canonical absolute specified path, starting with the root_entry.
 
-If the path contains symlinks or '..', they will be resolved properly.
-Symbolic links are not followed if they are the final element of the path.
-To force symbolic links to be resolved, simply append '.' to @path_names.
+First, a note on @path_names: you need to specify the volume, which for UNIX
+is the empty string ''.  While volumes might seem like an unnecessary
+concept, and I wasn't originally going to include that in my design, it helped
+in 2 major ways: it allows us to store a regular ::Dir::Entry for the root
+directory (which is useful for things like permissions and timestamp) and
+allows us to record general metadata for the filesystem as a whole, within the
+->metadata of the volume_dir.  As a side benefit, Windows users might
+appreciate being able to save backups of multiple volumes in a way that
+preserves their view of the system.  As another side benefit, it is compatible
+with File::Spec->splitdir.
 
-If the path does not exist, or cannot be resolved for some reason, this
-method returns undef, and the error is stored in the optional parameter
-$error_out.  If you would rather die on an unresolved path, use
-'resolve_path_or_die()'.
+Next, a note on resolving paths: This function will follow symlinks in much
+the same way Linux does.  If the path you specify ends with a symlink, the
+result will be a Dir::Entry describing the symlink.  If the path you specify
+ends with a symlink and a "" (equivalent of ending with a '/'), the symlink
+will be resolved to a Dir::Entry for the target file or directory. (and if
+it doesn't exist, you get an error)
 
-If you want symbolic links to resolve properly, $root_entry must be the
-actual root directory of the filesystem. Passing any other directory will
-cause a chroot-like effect which you may or may not want.
+Also, its worth noting that the directory objects in DataStore::CAS::FS are
+strictly a tree, with no back-reference to the parent directory.  So, ".."
+in the path will be resolved by removing one element from the path.  HOWEVER,
+this still gives you a kernel-style resolve (rather than a shell-style resolve)
+because if you specify "/1/foo/.." and foo is a symlink to "/1/2/3",
+the ".." will back you up to "/1/2/" and not "/1/".
 
-=head2 resolve_path_or_die
+The tree-with-no-parent-reference design is also why we return an array of
+the entire path, since you can't take a final directory and trace it backwards.
 
-Same as resolve_path, but calls 'croak' with the error message if the
-resolve fails.
+If the path does not exist, or cannot be resolved for some reason, this method
+will either return undef or die, based on whether you provided the optional
+'nodie' flag.
 
-=head2 resolve_path_partial
+Flags:
 
-Same as resolve_path, but if the path doesn't exist, any missing directories
-will be given placeholder Dir::Entry objects.  You can test whether the path
-was resolved completely by checking whether $result->[-1]->type is defined.
+=over
+
+=item no_die => $bool
+
+Return undef instead of dying
+
+=item error_out => \$err_variable
+
+If set to a scalar-ref, the scalar ref will receive the error message, if any.
+You probably want to set 'nodie' as well.
+
+=item partial => $bool
+
+If the path doesn't exist, any missing directories will be given placeholder
+Dir::Entry objects.  You can test whether the path was resolved completely by
+checking whether $result->[-1]->type is defined.
+
+=item chroot => \$DataStore_CAS_FS_Dir_Entry
+
+Allows you to pick a custom root directory. (also affects symlinks)
 
 =cut
 
 sub resolve_path {
-	my ($self, $root_entry, $path, $error_out)= @_;
-	my $ret= $self->_resolve_path($root_entry, $path, 0);
+	my ($self, $path, $flags)= @_;
+	$flags ||= {};
+	
+	my $ret= $self->_resolve_path($path, $flags->{partial});
+	
+	# Array means success, scalar means error.
 	return $ret if ref($ret) eq 'ARRAY';
-	$$error_out= $ret;
-	return undef;
-}
 
-sub resolve_path_partial {
-	my ($self, $root_entry, $path, $error_out)= @_;
-	my $ret= $self->_resolve_path($root_entry, $path, 1);
-	return $ret if ref($ret) eq 'ARRAY';
-	$$error_out= $ret;
+	# else, got an error...
+	${$flags->{error_out}}= $ret
+		if ref $flags->{error_out};
+	croak $ret unless $flags->{no_die};
 	return undef;
-}
-
-sub resolve_path_or_die {
-	my ($self, $root_entry, $path)= @_;
-	my $ret= $self->_resolve_path($root_entry, $path, 0);
-	return $ret if ref($ret) eq 'ARRAY';
-	croak $ret;
 }
 
 sub _resolve_path {
-	my ($self, $root_entry, $path, $createMissing)= @_;
+	my ($self, $path, $createMissing)= @_;
 
-	my @path= ref($path)? @$path : File::Spec->splitdir($path);
-	
-	my @dirents= ( $root_entry );
+	my @path= ref($path)? @$path : do {
+		my ($vol, $dir, $file)= File::Spec->splitpath($path);
+		($vol, (grep { length } File::Spec->splitdir($dir)), $file);
+	};
+
+	my @dirents= ( $self->get_volume_root($path[0]) );
+	defined $dirents[0]
+		or return "No such volume '$path[0]'";
+
 	return "Root directory must be a directory"
-		unless $root_entry->type eq 'dir';
+		unless $dirents[0]->type eq 'dir';
 
 	while (@path) {
 		my $ent= $dirents[-1];
@@ -425,16 +438,16 @@ sub _resolve_path {
 		# will be given unique '->type' values, and appropriate handling.
 		if ($ent->type eq 'symlink') {
 			# Sanity check on symlink entry
-			my $target= $ent->path_ref;
+			my $target= $ent->ref;
 			defined $target and length $target
 				or return 'Invalid symbolic link "'.$ent->name.'"';
 
-			unshift @path, grep { length } split('/', $target);
+			unshift @path, split('/', $target, -1);
 			pop @dirents;
 			
 			# If an absolute link, we start over from the root
-			@dirents= ( $root_entry )
-				if substr($target,0,1) eq '/';
+			@dirents= ( $dirents[0] )
+				if $path[0] eq '';
 
 			next;
 		}
@@ -443,8 +456,8 @@ sub _resolve_path {
 			unless ($ent->type eq 'dir');
 
 		# If no hash listed, directory was not stored. (i.e. --exclude option during import)
-		if (defined $ent->hash) {
-			$dir= $self->get_dir($ent->hash);
+		if (defined $ent->ref) {
+			$dir= $self->get_dir($ent->ref);
 			defined $dir
 				or return 'Failed to open directory "'.$ent->name.'"';
 		}
@@ -498,7 +511,7 @@ the arguments that the superclass sees, and to catch invalid arguments.
 
 =cut
 
-our @_ctor_params= qw: scanner store :;
+our @_ctor_params= qw: store volume_dir root_entry hash_of_empty_dir dir_cache :;
 sub _ctor_params { @_ctor_params }
 
 sub _ctor {
@@ -509,19 +522,155 @@ sub _ctor {
 	croak "Invalid parameter: ".join(', ', keys %$params)
 		if (keys %$params);
 
-	# Validate our sub-objects
-	defined $p->{store} and $p->{store}->isa('DataStore::CAS')
-		or croak "Missing/invalid parameter 'store'";
-	defined $p->{scanner} and $p->{scanner}->isa('DataStore::CAS::FS::Scanner')
-		or croak "Missing/invalid parameter 'scanner'";
+	croak "Missing/Invalid parameter 'store'"
+		unless defined $p->{store} and $p->{store}->can('get');
 
-	# Pick suitable defaults for the dircache
-	$p->{_dircache}= {};
-	$p->{_dircache_recent}= [];
-	$p->{_dircache_recent_idx}= 0;
-	$p->{_dircache_recent_mask}= 63;
-	bless $p, $class;
+	$p->{dir_cache} ||= DataStore::CAS::FS::DirCache->new();
+	croak "Missing/Invalid parameter 'dir_cache'"
+		unless defined $p->{dir_cache} and $p->{dir_cache}->can('clear');
+
+	$p->{hash_of_empty_dir}= $class->_calc_empty_dir_hash($p->{store})
+		unless defined $p->{hash_of_empty_dir};
+
+	croak "Constructor requires exactly one of volume_dir or root_entry"
+		unless 1 == grep { defined } @{$p}{'volume_dir','root_entry'};
+
+	if (defined $p->{volume_dir}) {
+		croak "Invalid parameter 'volume_dir'"
+			unless ref $p->{volume_dir}
+				and ref($p->{volume_dir})->can('get_entry');
+	}
+	elsif (defined $p->{root_entry}) {
+		croak "Invalid parameter 'root_entry'"
+			unless ref $p->{root_entry}
+				and ref($p->{root_entry})->can('type')
+				and $p->{root_entry}->type eq 'dir'
+				and defined $p->{root_entry}->ref;
+	}
+
+	my $self= bless $p, $class;
+
+	# If they gave us a 'root_entry', make sure we can load it
+	$self->get_dir($self->root_entry->ref)
+		or croak "Unable to load root directory '".$self->root_entry->ref."'";
+
+	return $self;
 }
+
+package DataStore::CAS::FS::Path;
+use strict;
+use warnings;
+use Carp;
+
+=head1 PATH OBJECTS
+
+=cut
+
+sub path_names { $_[0]{path_names} }
+sub path_ents  { $_[0]{path_ents} || $_[0]->resolve }
+sub filesystem { $_[0]{filesystem} }
+
+sub resolve    { $_[0]{path_ents}= $_[0]{filesystem}->resolve_path($_[0]{path_names}) }
+
+sub final_ent  { $_[0]->path_ents->[-1] }
+sub type       { $_[0]->final_ent->type }
+sub file       {
+	defined(my $hash= $_[0]->final_ent->hash)
+		or croak "Path is not a file";
+	$_[0]->filesystem->get($hash);
+}
+sub open       { $_[0]->file->open }
+
+package DataStore::CAS::FS::DirCache;
+use strict;
+use warnings;
+
+=head1 DIRECTORY CACHE
+
+Directories are uniquely identified by their hash, and directory objects are
+immutable.  This creates a perfect opportunity for caching recent directories
+and reusing the objects.
+
+When you call C<$fs->get_dir($hash)>, $fs keeps a weak reference to that
+directory which will persist until the directory object is garbage collected.
+It will ALSO hold a strong reference to that directory for the next N calls
+to C<$fs->get_dir($hash)>, where the default is 64.  You can change how many
+references $fs holds by setting C<$fs->dir_cache->size(N)>.
+
+The directory cache is *not* global, and a fresh one is created during the
+constructor of the FS, if needed.  However, many FS instances can share the
+same dir_cache object, and FS methods that return a new FS instance will pass
+the old dir_cache object to the new instance.
+
+If you want to implement your own dir_cache, don't bother subclassing the
+built-in one; just create an object that meets this API:
+
+=head1 size( [$new_size] )
+
+Read/write accessor that returns the number of strong-references it will hold.
+
+=head1 clear()
+
+Clear all strong references and clear the weak-reference index.
+
+=head1 get( $digest_hash )
+
+Return a cached directory, or undef.
+
+=head1 put( $dir )
+
+Cache the Dir object.
+
+=cut
+
+sub size {
+	if (@_ > 1) {
+		my ($self, $new_size)= @_;
+		$self->{size}= $new_size;
+		$self->{_recent}= [];
+		$self->{_recent_idx}= 0;
+	}
+	$_[0]{size};
+}
+
+sub new {
+	my $class= shift;
+	my %p= ref($_[0])? %{$_[0]} : @_;
+	$p{size} ||= 32;
+	$p{_by_hash} ||= {};
+	$p{_recent} ||= [];
+	$p{_recent_idx} ||= 0;
+	bless \%p, $class;
+}
+
+sub clear {
+	$_= undef for @{$_[0]{_recent}};
+	$_[0]{_by_hash}= {};
+}
+
+sub get {
+	return $_[0]{_by_hash}{$_[1]};
+}
+
+sub put {
+	my ($self, $dir)= @_;
+	# Hold onto a strong reference for a while.
+	$self->{_recent}[ $self->{_recent_idx}++ ]= $dir;
+	$self->{_recent_idx}= 0 if $self->{_recent_idx} > @{$self->{_recent}};
+	# Index it using a weak reference.
+	Scalar::Util::weaken( $self->{_by_hash}{$dir->hash}= $dir );
+	# Now, a nifty hack: we attach an object to watch for the destriction of the
+	# directory.  Lazy references will get rid of the dir object, but this cleans
+	# up our _by_hash index.
+	$dir->{'#DataStore::CAS::FS::DirCacheCleanup'}=
+		bless [ $self->{_by_hash}, $dir->hash ], 'DataStore::CAS::FS::DirCacheCleanup';
+}
+
+package DataStore::CAS::FS::DirCacheCleanup;
+use strict;
+use warnings;
+
+sub DESTROY { delete $_[0][0]{$_[0][1]}; }
 
 1;
 

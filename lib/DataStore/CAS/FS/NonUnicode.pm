@@ -94,6 +94,13 @@ sub str_concat {
 	return bless \($swap? $other.$$self : $$self.$other), ref($self);
 }
 
+sub add_json_filter {
+	my ($self, $json)= @_;
+	$json->filter_json_single_key_object(
+		'*NonUnicode*' => \&DataStore::CAS::FS::NonUnicode::FROM_JSON
+	);
+}
+
 sub TO_JSON {
 	my $x= ${$_[0]};
 	utf8::upgrade($x);

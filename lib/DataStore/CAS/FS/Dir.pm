@@ -305,7 +305,7 @@ Get a directory entry by name.  The name is case-sensitive.
 =cut
 sub get_entry {
 	return (
-		($_[0]{_entry_name_map} ||= { map { $_->name => $_ } $_[0]{_entries} })
+		($_[0]{_entry_name_map} ||= { map { $_->name => $_ } @{$_[0]{_entries}} })
 			->{$_[1]}
 	);
 }
@@ -393,10 +393,8 @@ sub _deserialize {
 		$bytes= <$handle>;
 	}
 
-	my $enc= JSON->new()->utf8->canonical->convert_blessed
-		->filter_json_single_key_object(
-			'*NonUnicode*' => \&DataStore::CAS::FS::NonUnicode::FROM_JSON
-		);
+	my $enc= JSON->new()->utf8->canonical->convert_blessed;
+	DataStore::CAS::FS::NonUnicode->add_json_filter($enc);
 	my $data= $enc->decode($bytes);
 	$self->{metadata}= $data->{metadata} or croak "Directory data is missing 'metadata'";
 	$data->{entries} or croak "Directory data is missing 'entries'";
