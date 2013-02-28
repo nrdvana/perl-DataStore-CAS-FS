@@ -46,7 +46,7 @@ sub put_handle {
 	return $self->put_scalar($data);
 }
 
-sub file_open {
+sub open_file {
 	my ($self, $file, $flags)= @_;
 	open(my $fh, '<', \$self->entries->{$file->hash})
 		or die "open: $!";

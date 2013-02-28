@@ -297,6 +297,10 @@ See '->put' for the discussion of 'flags'.
 
 =head2 new_write_handle
 
+Get a virtual handle to temporary space that, after calling '$handle->commit',
+will store all data written as a new DataStore::CAS::File.  $handle->commit
+returns this File.
+
 =head2 validate( $digest_hash [, %flags ])
 
 Validate an entry of the CAS.  This is used to detect whether the storage
@@ -384,7 +388,7 @@ sub iterator {
 	die "TODO: Implement me"
 }
 
-=head2 file_open( $file [, \%flags ])
+=head2 open_file( $file [, \%flags ])
 
 Open the File object (returned by 'get') and return a readable and seekable
 filehandle to it.  The filehandle might be a perl filehandle, or might be a
@@ -402,9 +406,28 @@ are 'raw' by default.
 
 =back
 
+=head2 new_write_handle
+
+Get a new handle for writing to the Store.  The data written to this handle
+will be saved to a temporary file as the digest hash is calculated.
+
+When done writing, call either C<$cas->commit_write_handle( $handle )> (or the
+alias C<$handle->commit()>) which returns the new File object.
+
+If you free the handle without committing it, the data will not be added to
+the CAS.
+
+=head2 commit_write_handle( $handle )
+
+This closes the given write-handle, and then finishes calculating its digest
+hash, and then stores it into the CAS.  It returns a DataStore::CAS::File
+object for the new file.
+
 =cut
 
 sub _file_destroy {}
+
+# Needs to use "$," and "$\" to conform to official API
 
 sub _handle_destroy {}
 
@@ -434,7 +457,7 @@ Read-only attribute; The length of the file, in bytes.
 
 =item open([ $layer_name | %flags | \%flags ])
 
-A convenience method to call '$file->store->file_open($file, \%flags)'
+A convenience method to call '$file->store->open_file($file, \%flags)'
 
 =back
 
@@ -443,7 +466,6 @@ documentation for your particular store.
 
 =cut
 
-BEGIN { $INC{'DataStore/CAS/File.pm'}= 1; }
 package DataStore::CAS::File;
 use strict;
 use warnings;
@@ -454,11 +476,11 @@ sub size  { $_[0]{size} }
 
 sub open {
 	my $self= shift;
-	return $self->{store}->file_open($self)
+	return $self->{store}->open_file($self)
 		if @_ == 0;
-	return $self->{store}->file_open($self, { @_ })
+	return $self->{store}->open_file($self, { @_ })
 		if @_ > 1;
-	return $self->{store}->file_open($self, { layer => $_[0] })
+	return $self->{store}->open_file($self, { layer => $_[0] })
 		if @_ == 1 and !ref $_[0];
 	Carp::croak "Wrong arguments to 'open'";
 };
@@ -478,36 +500,29 @@ sub AUTOLOAD {
 	);
 }
 
-BEGIN { $INC{'DataStore/CAS/Handle.pm'}= 1; }
-package DataStore::CAS::Handle;
+package DataStore::CAS::VirtualHandle;
 use strict;
 use warnings;
 
 sub new {
-	my ($class, $cas, $value)= @_;
+	my ($class, $cas, $fields)= @_;
 	my $glob= bless Symbol::gensym(), $class;
 	${*$glob}= $cas;
-	%{*$glob}= %{$value||{}};
-	tie *$glob, "${class}::Tied", $glob;
+	%{*$glob}= %{$fields||{}};
+	tie *$glob, $glob;
 	$glob;
 }
+sub TIEHANDLE { return $_[0]; }
 
-sub _store { ${*${$_[0]}} }  # the scalar field of the symbol points to the CAS object
-sub _data  { \%{*${$_[0]}} } # the hashref field of the symbol holds the fields of the handle
+sub _cas  { ${*${$_[0]}} }  # the scalar view of the symbol points to the CAS object
+sub _data { \%{*${$_[0]}} } # the hashref view of the symbol holds the fields of the handle
 
-sub close    { unshift @_, ${*{$_[0]}}; goto $_[0]->can('_handle_close') }
-sub eof      { unshift @_, ${*{$_[0]}}; goto $_[0]->can('_handle_eof') }
-sub seek     { unshift @_, ${*{$_[0]}}; goto $_[0]->can('_handle_seek') }
-sub tell     { unshift @_, ${*{$_[0]}}; goto $_[0]->can('_handle_tell') }
-sub read     { unshift @_, ${*{$_[0]}}; goto $_[0]->can('_handle_read') }
-sub readline { unshift @_, ${*{$_[0]}}; goto $_[0]->can('_handle_readline') }
-sub print    { unshift @_, ${*{$_[0]}}; goto $_[0]->can('_handle_print') }
-sub write    { unshift @_, ${*{$_[0]}}; goto $_[0]->can('_handle_write') }
-sub DESTROY  { unshift @_, ${*{$_[0]}}; goto $_[0]->can('_handle_destroy') }
+sub DESTROY { unshift @_, ${*{$_[0]}}; goto $_[0]->can('_handle_destroy') }
 
+# By default, any method not defined will call to C<$cas->_handle_$method( $handle, @args );>
 our $AUTOLOAD;
 sub AUTOLOAD {
-	unshift @_, ${*${$_[0]}}; # my ($cas, $value)
+	unshift @_, ${*${$_[0]}}; # unshift @_, $self->_cas
 	my $attr= substr($AUTOLOAD, rindex($AUTOLOAD, ':')+1);
 	goto (
 		$_[0]->can("_handle_$attr")
@@ -516,11 +531,35 @@ sub AUTOLOAD {
 }
 
 #
+# Tied filehandle API
+#
+
+sub READ     { (shift)->read(@_) }
+sub READLINE { wantarray? (shift)->readlines : (shift)->readline }
+sub GETC     { $_[0]->getc }
+sub EOF      { $_[0]->eof }
+
+sub WRITE    { (shift)->write(@_) }
+sub PRINT    { (shift)->print(@_) }
+sub PRINTF   { (shift)->printf(@_) }
+
+sub SEEK     { (shift)->seek(@_) }
+sub TELL     { (shift)->tell(@_) }
+
+sub FILENO   { $_[0]->fileno }
+sub CLOSE    { $_[0]->close }
+
+#
 # The following are some default implementations to make subclassing less cumbersome.
 #
 
-# virtual handles are unlikely to have one
-sub fileno { -1 }
+sub readlines {
+	my (@ret, $line);
+	wantarray or !defined wantarray or die "readlines called in scalar context";
+	push @ret, $line
+		while defined ($line= $_[0]->readline);
+	@ret;
+}
 
 # I'm not sure why anyone would ever want this function, but I'm adding
 #  it for completeness.
@@ -529,38 +568,55 @@ sub getc {
 	$_[0]->read($c, 1)? $c : undef;
 }
 
-# same API...
-*sysread= *read;
-*syswrite= *write;
-*sysseek= *seek;
+# 'write' does not guarantee that all bytes get written in one shot.
+# Needs to be called in a loop to accomplish "print" semantics.
+sub _write_all {
+	my ($self, $str)= @_;
+	while (1) {
+		my $wrote= $self->write($str);
+		return 1 if defined $wrote and ($wrote eq length $str);
+		return undef unless defined $wrote or $!{EINTR} or $!{EAGAIN};
+		substr($str, 0, $wrote)= '';
+	}
+}
+
+# easy to forget that 'print' API involves "$," and "$\"
+sub print {
+	my $self= shift;
+	my $str= join( (defined $, ? $, : ""), @_ );
+	$str .= $\ if defined $\;
+	$self->_write_all($str);
+}
 
 # as if anyone would want to write their own printf implementation...
 sub printf {
-	@_= ($_[0], sprintf($_[1], $_[2..$#_]));
-	goto $_[0]->can('print');
+	my $self= shift;
+	my $str= sprintf($_[0], $_[1..$#_]);
+	$self->_write_all($str);
 }
 
-package DataStore::CAS::Handle::Tied;
+# virtual handles are unlikely to have one, and if they did, they wouldn't
+# be using this class
+sub fileno { undef; }
+
+package DataStore::CAS::FileCreatorHandle;
 use strict;
 use warnings;
+use parent -norequire => 'DataStore::CAS::VirtualHandle';
 
-sub TIEHANDLE {
-	my ($class, $ref)= @_;
-	Scalar::Util::weaken($ref);
-	bless \$ref, $class;
-}
+# For write-handles, commit data to the CAS and return the File object for it.
+sub commit   { $_[0]->_cas->_handle_commit(@_) }
 
-sub WRITE    { unshift @_, ${(shift)}; goto $_[0]->can('write') }
-sub PRINT    { unshift @_, ${(shift)}; goto $_[0]->can('print') }
-sub PRINTF   { unshift @_, ${(shift)}; goto $_[0]->can('printf') }
-sub READ     { unshift @_, ${(shift)}; goto $_[0]->can('read') }
-sub READLINE { unshift @_, ${(shift)}; goto $_[0]->can('readline') }
-sub GETC     { unshift @_, ${(shift)}; goto $_[0]->can('getc') }
-sub EOF      { unshift @_, ${(shift)}; goto $_[0]->can('eof') }
-sub CLOSE    { unshift @_, ${(shift)}; goto $_[0]->can('close') }
-sub FILENO   { unshift @_, ${(shift)}; goto $_[0]->can('fileno') }
-sub SEEK     { unshift @_, ${(shift)}; goto $_[0]->can('seek') }
-sub TELL     { unshift @_, ${(shift)}; goto $_[0]->can('tell') }
-# DESTROY is handled by the encapsulating blessed globref.
+# These would happen anyway via the AUTOLOAD, but we enumerate them so that
+# they officially appear as methods of this class.
+sub close    { $_[0]->_cas->_handle_close(@_) }
+sub seek     { $_[0]->_cas->_handle_seek(@_) }
+sub tell     { $_[0]->_cas->_handle_tell(@_) }
+sub write    { $_[0]->_cas->_handle_write(@_) }
+
+# This is a write-only handle
+sub eof      { return 1; }
+sub read     { return 0; }
+sub readline { return undef; }
 
 1;

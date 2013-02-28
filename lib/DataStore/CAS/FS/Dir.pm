@@ -5,7 +5,7 @@ use warnings;
 use Carp;
 use Try::Tiny;
 require JSON;
-use DataStore::CAS::FS::NonUnicode;
+require DataStore::CAS::FS::NonUnicode;
 
 our $VERSION= 1.0000;
 
@@ -16,31 +16,79 @@ indexed by filename.
 
 =head1 SYNOPSIS
 
+  my %metadata= ( foo => 1, bar => 42 );
+  my @entries= ( { name => 'file1', type => 'file', ref => 'SHA1DIGESTVALUE', mtime => '1736354736' } );
+  
+  my $bytes= '';
+  open my $handle, '>', \$bytes;
+  DataStore::CAS::FS::Dir::Universal->encode(\@entries, $handle);
+  
+  open $handle, '<', \$bytes;
+  my $dir= DataStore::CAS::FS::Dir->decode($handle);
+  
+  print Dumper( $dir->get_entry('file1') );
+
 =head1 DESCRIPTION
 
 This class handles the job of packing or unpacking a directory listing to/from
 a stream of bytes.  This class can store any arbitrary metadata about a file,
-and encodes it with JSON.  Various subclasses exist which support more limited
-attributes and more efficient encoding.
-For instance, the DataStore::CAS::FS::Dir::Minimal module only stores filename
-and content references (and a few other things like symlink targets and device
-file nodes) and results in a very compact serialization.
+and encodes it with JSON for compatibility with other tools.
 
-See the DataStore::CAS::FS::Dir::Unix if you want to store bare 'stat' entries
-for each file.  Eventually there will also be a ::Dir::UnixAttr if you want to
+Various subclasses exist which support more limited attributes and more
+efficient encoding.
+
+=over
+
+=item Minimal
+
+DataStore::CAS::FS::Dir::Minimal only stores filename, content reference, and
+mtime, and results in a very compact serialization.  Use that one if you don't
+care about permissions and just want enough information for an incremental
+backup.
+
+=item Unix
+
+DataStore::CAS::FS::Dir::Unix stores bare 'stat' entries for each file.
+It isn't so rigid as to use fixed-width fields, so it should serve any
+unix-like architecture with similar stat() fields.
+
+=item Others...
+
+Eventually there will also be a ::Dir::UnixAttr if you want to
 store ACLs and Extended Attributes, a ::Dir::DosFat for fat16/32, and a
-::Dir::Windows for ACL-based Windows permissions.
+::Dir::Windows for ACL-based Windows permissions.  Patches welcome.
 
-*Every* module should support all known filesystem entity types.
-They only differ in which metadata they keep for that entry.
+=item Your Own
+
+It is very easy to write your own directory serializer!  See the section
+on L<DataStore::CAS::FS::Dir/EXTENDING>.
+
+=back
 
 Note that with the public API, you cannot instantiate DataStore::CAS::FS::Dir
-objects until they has been serialized and deserialized again. To do so, build
-a directory listing in the format returned by File::CAS::DirScan, and then
-serialize it using an appropriate Directory class's SerializeEntries() method.
+objects until they have been serialized and deserialized again. To do so, build
+a directory listing in the format returned by DataStore::CAS::FS::Scanner, and
+then serialize it using an appropriate Directory class's encode() method.
 
 All ::Dir objects are intended to be immutable.  They are also cached by
-DataStore::CAS::FS, so modifying them could cause problems.
+DataStore::CAS::FS, so modifying them could cause problems.  Don't do that.
+
+=head2 Unicode
+
+While I almost went with the option to operate purely on bytes, I decided to
+bite the bullet and make this API as Unicode-friendly as I could.  The one
+exception is filenames; Unix uses byte-oriented filenames, and Perl matches
+this by auto-encoding all unicode strings to UTF-8 before accessing the
+filesystem.  Since concatenating unicode with non-unicode in Perl will
+generally mangle filenames, I decided to keep all the filenames as bytes.
+Also, since 'ref' is either a Digest hash or a symlink value, it made sense
+to keep it bytes-only as well.
+
+All other metadata, however, should be unicode.  Most metadata related to
+file entries is integer-based anyway, so this shouldn't be much of an issue.
+If you need for some reason to attach a string of bytes and want it to come
+back to Perl as bytes, wrap your data with the utility class
+L<DataStore::CAS::Dir::NonUnicode>.  
 
 =head1 ATTRIBUTES
 
@@ -197,7 +245,6 @@ sub SerializeEntries {
 	ref($metadata) eq 'HASH' or croak "Metadata must be a hashref"
 		if $metadata;
 
-	use Data::Printer;
 	my @entries= sort { $a->{name} cmp $b->{name} }
 		map {
 			my %entry= %{ref $_ eq 'HASH'? $_ : $_->as_hash};

@@ -21,9 +21,9 @@ sub dies_like {
 use_ok('DataStore::CAS') || BAIL_OUT;
 
 my $self= bless {}, 'main';
-sub file_open {
+sub open_file {
 	my @arg_synopsis= map { ref($_) || $_ } @_;
-	"store->_file_open(@arg_synopsis) was called";
+	"store->open_file(@arg_synopsis) was called";
 }
 sub _file_somefield {
 	my @arg_synopsis= map { ref($_) || $_ } @_;
@@ -36,7 +36,7 @@ my $f= bless { hash => '0' x 20, size => 42, a => 1, b => 2, store => $self }, '
 is( $f->store, $self, 'store attr' );
 is( $f->hash, '0' x 20, 'hash attr' );
 is( $f->size, 42, 'size attr' );
-is( $f->open('foo'), 'store->_file_open(main DataStore::CAS::File HASH) was called', 'open method' );
+is( $f->open('foo'), 'store->open_file(main DataStore::CAS::File HASH) was called', 'open method' );
 is( $f->a, 1, 'auto-loaded field' );
 is( $f->b, 2, 'auto-loaded field' );
 is( $f->somefield('x'), 'store->_file_somefield(main DataStore::CAS::File x) was called', 'auto-loaded method' );

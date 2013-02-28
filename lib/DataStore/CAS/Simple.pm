@@ -490,7 +490,7 @@ sub validate {
 	return ($hash eq $hash2? 1 : 0);
 }
 
-sub file_open {
+sub open_file {
 	my ($self, $file, $flags)= @_;
 	my $mode= '<';
 	$mode .= ':'.$flags->{layer} if ($flags && $flags->{layer});

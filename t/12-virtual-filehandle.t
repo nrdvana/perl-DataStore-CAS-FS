@@ -1,13 +1,11 @@
 #!perl
 use strict;
 use warnings;
-
-use Test::More;
-use Data::Dumper;
 use Try::Tiny;
-use Carp;
 
-use_ok('File::CAS::File') || BAIL_OUT;
+use Test::More skip_all => 'Apply these tests to the splitting CAS module\'s handle object once written';
+use Data::Dumper;
+
 use_ok('File::CAS::Store::Virtual') || BAIL_OUT;
 
 $SIG{__WARN__}= sub { carp(join('',@_)) };
