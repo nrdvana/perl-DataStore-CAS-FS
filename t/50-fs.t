@@ -63,8 +63,8 @@ sub _buildTree {
 }
 my $rootEntry= DataStore::CAS::FS::Dir::Entry->new( name => '', _buildTree($tree, 'root') );
 
-my $sto= new_ok('DataStore::CAS::Virtual', [ entries => \%content ], 'create temp store');
-my $cas= new_ok('DataStore::CAS::FS', [ store => $sto, root => $rootEntry ], 'create virtual cas' );
+my $sto= new_ok('DataStore::CAS::Virtual', [ entries => \%content ], 'create virtual cas');
+my $cas= new_ok('DataStore::CAS::FS', [ store => $sto, root => $rootEntry ], 'create file view of cas' );
 
 is( $cas->resolve_path('/')->[-1], $rootEntry, 'resolve root abs' );
 is( $cas->resolve_path('.')->[-1], $rootEntry, 'resolve current dir at root' );

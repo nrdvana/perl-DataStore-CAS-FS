@@ -327,14 +327,24 @@ sub put_file   { (shift)->store->put_file(@_) }
 sub put_handle { (shift)->store->put_handle(@_) }
 sub validate   { (shift)->store->validate(@_) }
 
-=head2 path( \@path_names )
+=head2 path( @path_names )
 
 Returns a DataStore::CAS::FS::Path object which provides frendly
 object-oriented access to several other methods of CAS::FS. This object does
 *nothing* other than curry parameters, for your convenience.  In particular,
 the path isn't resolved and might not be valid.
 
-See resolve_path for notes about @path_names.
+See resolve_path for notes about @path_names.  Especially note that your path
+needs to start with the volume name, which will usually be ''.  Note that
+you get this already if you take an absolute path and pass it to
+File::Spec->splitdir.
+
+=cut
+
+sub path {
+	bless { filesystem => (shift), path_names => [ @_ ] },
+		'DataStore::CAS::FS::Path';
+}
 
 =head2 resolve_path( \@path_names [, \%flags ] )
 
@@ -500,8 +510,9 @@ sub _resolve_path {
 =head2 Constructor
 
 The constructor of DataStore::CAS::FS is slightly non-standard.  The method
-'new()' is in charge of coercing parameters into a single hashref, which it
-then passes to a private method '_ctor(\%params)'.
+'new()' is in charge of all DWIM features, taking a wide range of parameters
+and coercing them into the strict requirements for the constructor.  It then
+passes these in a modifiable hashref to the private method '_ctor(\%params)'.
 
 _ctor(\%params) is the actual constructor.  It should remove all the
 parameters it knows about from the hashref, and then call the parent
@@ -566,20 +577,39 @@ use Carp;
 
 =cut
 
-sub path_names { $_[0]{path_names} }
-sub path_ents  { $_[0]{path_ents} || $_[0]->resolve }
-sub filesystem { $_[0]{filesystem} }
+# main attributes
+sub path_names     { $_[0]{path_names} }
+sub path_ents      { $_[0]{path_ents} || $_[0]->resolve }
+sub filesystem     { $_[0]{filesystem} }
 
-sub resolve    { $_[0]{path_ents}= $_[0]{filesystem}->resolve_path($_[0]{path_names}) }
+# convenience accessors
+sub path_name_list { @{$_[0]->path_names} }
+sub path_ent_list  { @{$_[0]->path_ents} }
+sub final_ent      { $_[0]->path_ents->[-1] }
+sub type           { $_[0]->final_ent->type }
 
-sub final_ent  { $_[0]->path_ents->[-1] }
-sub type       { $_[0]->final_ent->type }
+# methods
+sub resolve {
+	$_[0]{path_ents}= $_[0]{filesystem}->resolve_path($_[0]{path_names})
+}
+
+sub path {
+	my $self= shift;
+	bless {
+		filesystem => $self->filesystem,
+		path_names => [ @{$self->path_names}, @_ ]
+	}, ref($self);
+}
+
 sub file       {
 	defined(my $hash= $_[0]->final_ent->hash)
 		or croak "Path is not a file";
 	$_[0]->filesystem->get($hash);
 }
-sub open       { $_[0]->file->open }
+
+sub open {
+	$_[0]->file->open
+}
 
 package DataStore::CAS::FS::DirCache;
 use strict;

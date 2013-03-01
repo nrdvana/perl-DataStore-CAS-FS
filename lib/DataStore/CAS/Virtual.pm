@@ -40,10 +40,37 @@ sub put_scalar {
 	$hash;
 }
 
-sub put_handle {
-	my ($self, $fh, $flags)= @_;
-	my $data= do { local $/= undef; <$fh> };
-	return $self->put_scalar($data);
+sub new_write_handle {
+	my ($self, $flags)= @_;
+	my $data= {
+		buffer  => '',
+		flags   => $flags
+	};
+	return DataStore::CAS::FileCreatorHandle->new($self, $data);
+}
+
+sub _handle_write {
+	my ($self, $handle, $buffer, $count, $offset)= @_;
+	my $data= $handle->_data;
+	utf8::encode($buffer) if utf8::is_utf8($buffer);
+	$offset ||= 0;
+	$count ||= length($buffer)-$offset;
+	$data->{buffer} .= substr($buffer, $offset, $count);
+	return $count;
+}
+
+sub _handle_seek {
+	croak "Seek unsupported (for now)"
+}
+
+sub _handle_tell {
+	my ($self, $handle)= @_;
+	return length($handle->_data->{buffer});
+}
+
+sub commit_write_handle {
+	my ($self, $handle)= @_;
+	return $self->put_scalar($handle->_data->{buffer}, $handle->_data->{flags});
 }
 
 sub open_file {

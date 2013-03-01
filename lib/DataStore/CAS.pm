@@ -156,7 +156,7 @@ This method is pure-virtual and must be implemented in the subclass.
 
 =cut
 
-#sub get
+sub get { ... }
 
 =head2 put( $thing, [ \%flags ])
 
@@ -186,16 +186,7 @@ Dies if it encounters anything else.
 
 The return value is the digest's hash of the stored data.
 
-The optional 'flags' hashref can contain a wide variety of parameters.
-One parameter supported by all CAS modules is the "dry_run" flag.
-Setting "dry_run" to true will calculate the hash of the $thing,
-but not store it.  Another parameter supported by all subclasses is
-'stats'.  Setting flags->{stats} to a hashref will instruct the CAS
-implementation to return information about the operation, such as number
-of bytes written, compression strategies used, etc.  The statistics are
-returned within that supplied hashref.  Values in the hashref are amended
-or added to, so you may use the same stats hashref for multiple calls and
-then see the summary for all operations when you are done.
+For %flags, see method new_write_handle.
 
 Example:
 
@@ -211,7 +202,7 @@ Example:
 sub put {
 	goto $_[0]->can('put_scalar') unless ref $_[1];
 	goto $_[0]->can('put_file')   if ref($_[1])->isa('DataStore::CAS::File') or ref($_[1])->isa('Path::Class::File');
-	goto $_[0]->can('put_handle') if ref($_[1])->isa('IO::Handle') or (reftype($_[1]) eq 'GLOB');
+	goto $_[0]->can('put_handle') if ref($_[1])->isa('IO::Handle') or (Scalar::Util::reftype($_[1]) eq 'GLOB');
 	croak("Can't 'put' object of type ".ref($_[1]));
 }
 
@@ -238,10 +229,10 @@ sub put_scalar {
 	#  same result, but best to be explicit about what we want and not rely on
 	#  undocumented behavior.
 	utf8::encode($scalar) if utf8::is_utf8($scalar);
-
-	open(my $fh, '<', \$scalar)
-		or croak "Failed to open memory stream: $!\n";
-	$self->put_handle($fh, $flags);
+	
+	my $handle= $self->new_write_handle($flags);
+	$handle->_write_all($scalar);
+	return $self->commit_write_handle($handle);
 }
 
 =head2 put_file( $filename | Path::Class::File | DataStore::CAS::File [, \%flags ])
@@ -254,24 +245,59 @@ Returns the digest's hash of the data stored.
 
 See '->put' for the discussion of 'flags'.
 
-Note that passing DataStore::CAS::File objects can sometimes re-use the disk
-storage of the file, and re-uses the supplied hash if the digest algorithm
-matches, resulting in a significant performance boost.  In particular, copying
-from one instance of DataStore::CAS::Simple to another will simply hard-link
-the source to the destination.  Other engines have been similarly optimized.
+Additional flags:
+
+=over
+
+=item hardlink => $bool
+
+If hardlink is true, and the CAS is backed by plain files, it will hardlink
+the file directly into the CAS.
+
+This reduces the integrity of your CAS; use with care.
+
+=item known_hashes => \%algorithm_digests
+
+If you already know the hash of your file, and don't want to re-calculate it,
+pass a hashref like C< { $algorithm_name => $digest_hash } > for this flag,
+and if this CAS is using one of those algorithms, it will use the hash you
+specified instead of re-calculating it.
+
+This reduces the integrity of your CAS; use with care.
+
+=item reuse_hash
+
+This is a shortcut for known_hashes if you specify an instance of
+DataStore::CAS::File.  It builds a known_hashes one one item using the source
+CAS's digest algorithm.
+
+=back
+
+Note: A good use of these flags is to transfer files from one instance of
+DataStore::CAS::Simple to another.
+
+  my $file= $cas1->get($hash);
+  $cas2->put($file, { hardlink => 1, reuse_hash => 1 });
 
 =cut
 
 sub put_file {
 	my ($self, $fname, $flags)= @_;
 	my $fh;
-	if (ref($fname) && $fname->can('open')) {
+	if (ref($fname) && ref($fname)->isa('DataStore::CAS::File')) {
+		if ($flags->{reuse_hash}) {
+			$flags->{known_hashes} ||= {};
+			$flags->{known_hashes}{ $fname->store->digest }= $fname->hash;
+		}
 		$fh= $fname->open
 			or croak "Can't open '$fname': $!";
-		binmode $fh, ':raw';
+	}
+	elsif (ref($fname) && $fname->can('open')) {
+		$fh= $fname->open('r')
+			or croak "Can't open '$fname': $!";
 	}
 	else {
-		open(my $fh, '<:raw', "$fname")
+		open($fh, '<', "$fname")
 			or croak "Can't open '$fname': $!";
 	}
 	$self->put_handle($fh, $flags);
@@ -293,13 +319,78 @@ See '->put' for the discussion of 'flags'.
 
 =cut
 
-# put_handle
+sub put_handle {
+	my ($self, $h_in, $flags)= @_;
+	binmode $h_in;
+	my $h_out= $self->new_write_handle($flags);
+	my $buf_size= $flags->{buffer_size} || 1024*1024;
+	my $buf;
+	while(1) {
+		my $got= read($h_in, $buf, $buf_size);
+		if ($got) {
+			$h_out->_write_all($buf) or croak "write: $!";
+		} elsif (!defined $got) {
+			next if ($!{EINTR} || $!{EAGAIN});
+			croak "read: $!";
+		} else {
+			last;
+		}
+	}
+	return $self->commit_write_handle($h_out);
+}
 
-=head2 new_write_handle
+=head2 new_write_handle( %flags )
 
-Get a virtual handle to temporary space that, after calling '$handle->commit',
-will store all data written as a new DataStore::CAS::File.  $handle->commit
-returns this File.
+Get a new handle for writing to the Store.  The data written to this handle
+will be saved to a temporary file as the digest hash is calculated.
+
+When done writing, call either C<$cas->commit_write_handle( $handle )> (or the
+alias C<$handle->commit()>) which returns the hash of all data written.  The
+handle will no longer be valid.
+
+If you free the handle without committing it, the data will not be added to
+the CAS.
+
+The optional 'flags' hashref can contain a wide variety of parameters, but
+these are supported by all CAS subclasses:
+
+=over
+
+=item dry_run => $bool
+
+Setting "dry_run" to true will calculate the hash of the $thing, but not store
+it.
+
+=item stats => \%stats_out
+
+Setting "stats" to a hashref will instruct the CAS implementation to return
+information about the operation, such as number of bytes written, compression
+strategies used, etc.  The statistics are returned within that supplied
+hashref.  Values in the hashref are amended or added to, so you may use the
+same stats hashref for multiple calls and then see the summary for all
+operations when you are done.
+
+=back
+
+=head2 commit_write_handle( $handle )
+
+This closes the given write-handle, and then finishes calculating its digest
+hash, and then stores it into the CAS.  It returns a DataStore::CAS::File
+object for the new file.
+
+The data will not actually be added to the CAS if you specified the 'dry_run'
+flag when creating the handle.
+
+=cut
+
+# This implementation probably needs overridden by subclasses.
+sub new_write_handle {
+	my ($self, $flags)= @_;
+	return DataStore::CAS::FileCreatorHandle->new($self, { flags => $flags });
+}
+
+# This must be implemented by subclasses
+sub commit_write_handle { ... }
 
 =head2 validate( $digest_hash [, %flags ])
 
@@ -364,7 +455,7 @@ No flags are yet implemented, though $flags{stats} will be supported.
 
 =cut
 
-# sub delete
+sub delete { ... }
 
 =head2 iterator([ \%flags ])
 
@@ -406,32 +497,15 @@ are 'raw' by default.
 
 =back
 
-=head2 new_write_handle
-
-Get a new handle for writing to the Store.  The data written to this handle
-will be saved to a temporary file as the digest hash is calculated.
-
-When done writing, call either C<$cas->commit_write_handle( $handle )> (or the
-alias C<$handle->commit()>) which returns the new File object.
-
-If you free the handle without committing it, the data will not be added to
-the CAS.
-
-=head2 commit_write_handle( $handle )
-
-This closes the given write-handle, and then finishes calculating its digest
-hash, and then stores it into the CAS.  It returns a DataStore::CAS::File
-object for the new file.
-
 =cut
 
+sub open_file { my ($file, $flags)= @_; ... }
+
+# File and Handle objects have DESTROY methods that call these
 sub _file_destroy {}
-
-# Needs to use "$," and "$\" to conform to official API
-
 sub _handle_destroy {}
 
-=head1 DataStore::CAS::File Wrappers
+=head1 FILE OBJECTS
 
 The 'get' method returns objects of type DataStore::CAS::File. (or a subclass)
 
@@ -503,6 +577,24 @@ sub AUTOLOAD {
 package DataStore::CAS::VirtualHandle;
 use strict;
 use warnings;
+
+=head1 HANDLE OBJECTS
+
+The handles returned by open_file and new_write_handle are compatible with
+both the old GLOBREF style functions and the new IO::Handle API.  In other
+words, you can use either
+
+  $handle->read($buffer, 100)
+  or
+  read($handle, $buffer, 100)
+
+So they are nicely compatible with other libraries you might use.  It is
+unlikely that they are actually real handles though, so you probably can't
+sysread/syswrite on them.  You can find out by checking "fileno($handle)".
+One notable exception is DataStore::CAS::Simple->open_file, which always
+returns a direct filehandle to the underlying file.
+
+=cut
 
 sub new {
 	my ($class, $cas, $fields)= @_;

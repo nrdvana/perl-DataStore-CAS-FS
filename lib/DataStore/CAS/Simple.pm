@@ -337,147 +337,170 @@ sub get {
 	}, 'DataStore::CAS::Simple::File';
 }
 
+sub new_write_handle {
+	my ($self, $flags)= @_;
+	my $data= {
+		wrote   => 0,
+		dry_run => $flags->{dry_run},
+		hash    => $flags->{known_digests}{$self->digest},
+		stats   => $flags->{stats},
+	};
+	
+	$data->{dest_file}= File::Temp->new( TEMPLATE => 'temp-XXXXXXXX', DIR => $self->path )
+		unless $data->{dry_run};
+	
+	$data->{digest}= $self->_new_digest
+		unless defined $data->{known_hash};
+	
+	return DataStore::CAS::FileCreatorHandle->new($self, $data);
+}
+
+sub _handle_write {
+	my ($self, $handle, $buffer, $count, $offset)= @_;
+	my $data= $handle->_data;
+
+	# Figure out count and offset, then either write or no-op (dry_run).
+	$offset ||= 0;
+	$count ||= length($buffer)-$offset;
+	my $wrote= (defined $data->{dest_file})? syswrite( $data->{dest_file}, $buffer, $count, $offset||0 ) : $count;
+
+	# digest only the bytes that we wrote
+	if (defined $wrote and $wrote > 0) {
+		local $!; # just in case
+		$data->{wrote} += $wrote;
+		$data->{digest}->add(substr($buffer, $offset, $wrote))
+			if defined $data->{digest};
+	}
+	return $wrote;
+}
+
+sub _handle_seek {
+	croak "Seek unsupported (for now)"
+}
+
+sub _handle_tell {
+	my ($self, $handle)= @_;
+	return $handle->_data->{wrote};
+}
+
+sub commit_write_handle {
+	my ($self, $handle)= @_;
+	my $data= $handle->_data;
+	
+	my $hash= defined $data->{hash}?
+		$data->{hash}
+		: $data->{digest}->hexdigest;
+	
+	my $temp_file= $data->{dest_file};
+	if (defined $temp_file) {
+		# Make sure all data committed
+		close $temp_file
+			or croak "while saving '$temp_file': $!";
+	}
+	
+	return $self->_commit_file($temp_file, $hash, $data);
+}
+
+sub _commit_file {
+	my ($self, $source_file, $hash, $flags)= @_;
+	# Find the destination file name
+	my $dest_name= $self->_path_for_hash($hash);
+	# Only if we don't have it yet...
+	if (-f $dest_name) {
+		if ($flags->{stats}) {
+			$flags->{stats}{dup_file_count}++;
+		}
+	}
+	else {
+		# link it into place
+		# we check for missing directories after the first failure,
+		#   in the spirit of keeping the common case fast.
+		$flags->{dry_run}
+			or link($source_file, $dest_name)
+			or ($self->_add_missing_path($hash) and link($source_file, $dest_name))
+			or croak "rename($source_file => $dest_name): $!";
+		# record that we added a new hash, if stats enabled.
+		if ($flags->{stats}) {
+			$flags->{stats}{new_file_count}++;
+			push @{ $flags->{stats}{new_files} ||= [] }, $hash;
+		}
+	}
+	$hash;
+}
+
 sub put_file {
 	my ($self, $file, $flags)= @_;
+
+	# Copied logic from superclass, because we might not get there
+	my $is_cas_file= ref $file && ref($file)->isa('DataStore::CAS::File');
+	if ($flags->{reuse_hash} && $is_cas_file) {
+		$flags->{known_hashes} ||= {};
+		$flags->{known_hashes}{ $file->store->digest }= $file->hash;
+	}
 
 	# Here is where we detect opportunity to perform optimized hard-linking
 	#  when copying to and from CAS implementations which are backed by
 	#  plain files.
-	if (ref $file and ref($file)->isa('DataStore::CAS::File')
-		and $file->can('local_file') and length $file->local_file
-	) {
-		$flags= { $flags? %$flags : () }; # make a copy
-		$flags->{link_from_local_file}= $file->local_file;
-		$flags->{known_hash}= $file->hash
-			if ($file->store->digest eq $self->digest);
-	}
-
-	# Else use the default implementation which opens and reads the file.
-	$self->SUPER::put_file($file, $flags);
-}
-
-sub _write_all_or_die {
-	my ($fh, $data)= @_;
-	my $wrote;
-	my $ofs= 0;
-	while ($ofs < length($data)) {
-		$wrote= syswrite($fh, $data, length($data) - $ofs, $ofs);
-		if ($wrote) {
-			$ofs+= $wrote;
-		} else {
-			croak "$!"
-				unless !defined($wrote) && ($!{EINTR} || $!{EAGAIN});
-		}
-	}
-}
-
-sub put_handle {
-	my ($self, $fh, $flags)= @_;
-	my $hardlink_source= $flags->{link_from_local_file};
-	my $dest_hash= $flags->{verify_hash}? undef : $flags->{known_hash};
-	my $dest_name;
-
-	# If we know the hash...
-	if (defined $dest_hash) {
-		my $dest_name= $self->_path_for_hash($dest_hash);
-
-		# If we know the hash, and we have it already, nevermind
-		return $dest_hash
-			if -f $dest_name;
-
-		# If we know the hash, and we want to hard-link, try it
+	if ($flags->{hardlink}) {
+		my $hardlink_source= 
+			($is_cas_file && $file->can('local_file') and length $file->local_file)? $file->local_file
+			: (ref $file && ref($file)->isa('Path::Class::File'))? "$file"
+			: (!ref $file)? $file
+			: undef;
 		if (defined $hardlink_source) {
-			# dry-run succeeds automatically.
-			# we check for missing directories after the first failure,
-			#   in the spirit of keeping the common case fast.
-			if ($flags->{dry_run} or link( $hardlink_source, $dest_name )
-				or ($self->_add_missing_path($dest_hash) and link( $hardlink_source, $dest_name ))
-			) {
-				# record that we added a new hash, if stats enabled.
-				if ($flags->{stats}) {
-					$flags->{stats}{new_file_count}++;
-					push @{ $flags->{stats}{new_files} ||= [] }, $dest_hash;
-				}
-				return $dest_hash;
-			}
-			# else we can't hard-link for some reason
-			$hardlink_source= undef;
-		}
-		# here, we need to copy the file, so go to the loop below.
-	}
-
-	# Create a temp file to write to
-	my ($temp_file, $need_copy);
-	if (!$flags->{dry_run}) {
-		$temp_file= File::Temp->new( TEMPLATE => 'temp-XXXXXXXX', DIR => $self->path );
-		binmode $temp_file;
-		$need_copy= 1;
-		# If we don't know the destination hash, but we want to attempt hard-linking,
-		# try hard-linking to ->path and then later rename it to the dest_name
-		if ($hardlink_source) {
-			if (link( $hardlink_source, $temp_file."-lnk" )) {
-				# success - we don't need to copy the file, just checksum it and rename.
-				# We cheat, and let the File::Temp object unlink us if an
-				#  exception occurs before we do the final rename().
-				unlink($temp_file);
-				rename($temp_file."-lnk", $temp_file)
-					or croak "rename(-> $temp_file): $!";
-			}
-			# else we failed to hardlink, and will use $dest_fh
+			# Try hard-linking it.  If fails, (i.e. cross-device) fall back to regular behavior
+			my $hash=
+				try { $self->_put_hardlink($file, $hardlink_source, $flags) }
+				catch { undef; };
+			return $hash if defined $hash;
 		}
 	}
-
-	my $digest= $self->_new_digest
-		unless defined $dest_hash;
-
-	# Read chunks of the stream, and either hash or save them or both.
-	my $buf;
-	my $is_real_fd= (defined fileno($fh) and fileno($fh) >= 0);
-	binmode $fh;
-	while(1) {
-		my $got= $is_real_fd?
-			sysread($fh, $buf, $self->copy_buffer_size)
-			: read($fh, $buf, $self->copy_buffer_size);
-		if ($got) {
-			# hash it (maybe)
-			$digest->add($buf) unless defined $dest_hash;
-			# then write to temp file (maybe)
-			_write_all_or_die($temp_file, $buf) if $need_copy;
-		} elsif (!defined $got) {
-			next if ($!{EINTR} || $!{EAGAIN});
-			croak "while reading input: $!";
-		} else {
-			last;
-		}
-	}
-
-	close $temp_file
-		or croak "while saving '$temp_file': $!";
-
-	unless (defined $dest_hash) {
-		$dest_hash= $digest->hexdigest;
-		$dest_name= $self->_path_for_hash($dest_hash);
-	}
-	
-	# Only if we don't have it yet
-	unless (-f $dest_name) {
-		# move it into place
-		# we check for missing directories after the first failure,
-		#   in the spirit of keeping the common case fast.
-		$flags->{dry_run}
-			or rename($temp_file, $dest_name)
-			or ($self->_add_missing_path($dest_hash) and rename($temp_file, $dest_name))
-			or croak "rename($temp_file => $dest_name): $!";
-		# record that we added a new hash, if stats enabled.
-		if ($flags->{stats}) {
-			$flags->{stats}{new_file_count}++;
-			push @{ $flags->{stats}{new_files} ||= [] }, $dest_hash;
-		}
-	}
-
-	return $dest_hash;
+	# Else use the default implementation which opens and reads the file.
+	return $self->SUPER::put_file($file, $flags);
 }
 
+sub _put_hardlink {
+	my ($self, $file, $hardlink_source, $flags)= @_;
+
+	# If we know the hash, try linking directly to the final name.
+	my $hash= $flags->{known_hashes}{$self->digest};
+	if (defined $hash) {
+		$self->_commit_file($hardlink_source, $hash, $flags);
+		return $hash;
+	}
+
+	# If we don't know the hash, we first link to a temp file, to find out
+	# whether we can, and then calculate the hash, and then rename our link.
+	# This way we can fall back to regular behavior without double-reading
+	# the source file.
+	
+	# Use File::Temp to atomically get a unique filename, which we use as a prefix.
+	my $temp_file= File::Temp->new( TEMPLATE => 'temp-XXXXXXXX', DIR => $self->path );
+	my $temp_link= $temp_file."-lnk";
+	link( $hardlink_source, $temp_link )
+		or return undef;
+	
+	# success - we don't need to copy the file, just checksum it and rename.
+	# use try/catch so we can unlink our tempfile
+	return
+		try {
+			# Calculate hash
+			open( my $handle, '<:raw', $temp_link ) or die "open: $!";
+			my $digest= $self->_new_digest->addfile($handle);
+			$hash= $digest->hexdigest;
+			close $handle or die "close: $!";
+
+			# link to final correct name
+			$self->_commit_file($temp_link, $hash, $flags);
+			unlink($temp_link);
+			$hash;
+		}
+		catch {
+			unlink($temp_link);
+			undef;
+		};
+}
+	
 sub validate {
 	my ($self, $hash)= @_;
 

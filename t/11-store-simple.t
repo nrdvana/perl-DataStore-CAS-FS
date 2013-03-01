@@ -101,6 +101,22 @@ sub test_get_put {
 	is( $cas->put($str), $hash, 'put scalar' );
 	is( $cas->get($hash)->size, length($str), 'file length matches' );
 	is( slurp($cas->get($hash)->open), $str, 'scalar read back correctly' );
+	
+	my $handle;
+	open($handle, "<", \$str) or die;
+	is( $cas->put($handle), $hash, 'put handle' );
+	
+	my $tmpfile= file('cas_tmp','test_file_1');
+	$handle= $tmpfile->open('w');
+	print $handle $str
+		or die;
+	close $handle;
+	is( $cas->put($tmpfile), $hash, 'put Class::Path::File' );
+	
+	is( $cas->put_file("$tmpfile"), $hash, 'put_file(filename)' );
+	
+	is( $cas->put($cas->get($hash)), $hash, 'put DataStore::CAS::File' );
+	
 	done_testing;
 }
 
@@ -120,11 +136,11 @@ sub test_hardlink_optimization {
 	my $hash1= '36803d17c40ace10c936ab493d7a957c60bdce4a';
 	my $hash256= 'e6ec36e4c3abf21935f8555c5f2c9ce755d67858291408ec02328140ae1ac8b0';
 
-	is( $cas1->put($str), $hash1, 'correct sha-1 hash' );
+	is( $cas1->put($str, { reuse_hash => 1, hardlink => 1 }), $hash1, 'correct sha-1 hash' );
 	my $file= $cas1->get($hash1) or die;
 	is( $file->local_file, $cas1->_path_for_hash($hash1), 'path is what we expected' );
 
-	is( $cas2->put($file), $hash1, 'correct sha-1 when migrated' );
+	is( $cas2->put($file, { reuse_hash => 1, hardlink => 1 }), $hash1, 'correct sha-1 when migrated' );
 	my $file2= $cas2->get($hash1) or die;
 	is( $file2->local_file, $cas2->_path_for_hash($hash1) );
 
@@ -133,12 +149,12 @@ sub test_hardlink_optimization {
 	is( $stat1->dev.','.$stat1->ino, $stat2->dev.','.$stat2->ino, 'inodes match - hardlink succeeded' );
 
 	# make sure it doesn't get the same hash when copied to a cas with different digest
-	is( $cas3->put($file), $hash256, 'correct sha-256 hash from sha-1 file' );
+	is( $cas3->put($file, { reuse_hash => 1, hardlink => 1 }), $hash256, 'correct sha-256 hash from sha-1 file' );
 	my $file3= $cas3->get($hash256);
 	my $stat3= stat( $file3->local_file ) or die "stat: $!";
 	is( $stat3->dev.','.$stat3->ino, $stat1->dev.','.$stat1->ino, 'inodes match - hardlink succeeded' );
 
-	is( $cas1->put($file3), $hash1, 'correct sha-1 hash from sha-2 file' );
+	is( $cas1->put($file3, { reuse_hash => 1, hardlink => 1 }), $hash1, 'correct sha-1 hash from sha-2 file' );
 
 	done_testing;
 }
