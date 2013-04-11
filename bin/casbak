@@ -73,7 +73,7 @@ try {
 	$cmd->run();
 }
 catch {
-	print STDERR "$_\n"
+	print STDERR "$_\n";
 	exit 3;
 };
 exit 0;

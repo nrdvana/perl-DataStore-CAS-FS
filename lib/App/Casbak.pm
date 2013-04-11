@@ -1,15 +1,54 @@
 package App::Casbak;
-use strict;
-use warnings;
-use File::CAS;
-use File::Spec;
+use Moo;
 use Carp;
 use Try::Tiny;
 use JSON ();
+use File::Spec;
+use DataStore::CAS::FS;
 
 =head1 NAME
 
-Casbak - backup utility built around File::CAS storage library
+Casbak - backup utility built around DataStore::CAS::FS library
+
+=head1 SYNOPSIS
+
+  # Create a new backup
+  my $cb= App::Casbak->init(
+    casbak_dir => '~/backups,
+    cas => 'DataStore::CAS::Simple',
+    ...
+  );
+  
+  # Store some files
+  my $cb= App::Casbak->new( casbak_dir => '~/backups' );
+  my $snap= $cb->get_snapshot(); # loads latest snapshot
+  my $fs= DataStore::CAS::FS->new( root => $snap->root_entry );
+  $cb->import_tree( fs => $fs, real => "~/foo", virt => '/' );
+  $cb->save_snapshot( fs => $fs );
+  
+  # Extract some files
+  my $snap= $cb->get_snapshot( '2013-04-01' );
+  my $fs= DataStore::CAS::FS->new( root => $snap->root_entry );
+  $cb->export_tree( fs => $fs, virt => '/', real => '/tmp/restore' );
+
+=head1 DESCRIPTION
+
+Casbak is a utility that creates backups of filesystems by storing them in
+content-addressable-storage.  It is much like Git, but preserves as much
+filesystem metadata as you want, and has the ability to selectively purge
+old backups. (purging capability actually depends on the CAS backend; at the
+moment it is designed but not implemented.  Coming soon.)
+
+Casbak is a practical wrapper around the library DataStore::CAS::FS, which is
+a virtual filesystem using DataStore::CAS as a storage backend.  If you want a
+CAS implementation with fancy features like file-chunking and etc, all you
+need to do is pick your favorite DataStore::CAS module, or write one yourself.
+DataStore::CAS has an extremely simple API.
+
+The Casbak utility is composed of this module (App::Casbak) and a number of
+command classes under App::Casbak::Cmd namespace which implement the command
+line interface.  You can easily extend Casbak by writing new perl modules in
+the App::Casbak::Cmd:: namespace and adding them to your perl module path.
 
 =head1 LOGGING
 
@@ -18,9 +57,9 @@ They are called as
 
   App::Casbak::Error(@things)
 
-where @things can contain objects with auto-stringification.
-*However* in the methods Debug() and Trace() objects will be dumped
-with Data::Dumper regardless of whether they supply stringification.
+where @things can contain objects with auto-stringification.  *However* in
+the methods Debug() and Trace(), objects will be dumped with Data::Dumper
+(or Data::Printer) regardless of whether they supply stringification.
 
 No stringification occurs at all unless the log level has enabled
 the function.
@@ -36,7 +75,7 @@ Call App::Casbak->SetLogLevel($integer) to set the log level.
 =cut
 
 our $LogLevel= 0;
-sub SetLogLevel { (undef, $LogLevel)= @_; }
+sub SetLogLevel { $LogLevel= $_[-1]; }
 sub Error { return unless $LogLevel > -3; print STDERR "Error: ".join(" ", @_)."\n"; }
 sub Warn  { return unless $LogLevel > -2; print STDERR "Warning: ".join(" ", @_)."\n"; }
 sub Note  { return unless $LogLevel > -1; print STDERR "Notice: ".join(" ", @_)."\n"; }
@@ -53,51 +92,34 @@ sub VersionParts {
 sub VersionMessage {
 	"casbak backup utility, Copyright 2012 Michael Conrad\n"
 	."App::Casbak version: ".join('.',VersionParts())."\n"
-	."File::CAS version: ".join('.',File::CAS::VersionParts())."\n";
+	."DataStore::CAS::FS version: ".join('.',DataStore::CAS::FS::VersionParts())."\n";
 }
 
-*_requireClass= *File::CAS::_requireClass;
+our $_config_filename=    'casbak.conf.json';
+our $_log_filename=       'casbak.log';
+our $_snapshots_filename= 'casbak.snapshots.tsv';
 
 =head1 ATTRIBUTES
 
 
+=head2 date_parser
+
+Returns a cached instance of the parser we use in the event that
+we need to parse a date string.  This is lazy-built.
 
 =cut
 
-sub backupDir { $_[0]{backupDir} }
-sub cfgFile   { File::Spec->catfile($_[0]->backupDir, 'casbak.conf.json') }
-sub logFile   { File::Spec->catfile($_[0]->backupDir, 'casbak.log') }
-sub snapIndexFile { File::Spec->catfile($_[0]->backupDir, 'casbak.snapshots') }
-sub storeDefaultPath { $_[0]{storeDefaultPath} }
-sub cas { $_[0]{cas} }
+has backup_dir         => ( is => 'ro', required => 1, default => sub { '.' } );
+has cas                => ( is => 'ro', coerce => \&_coerce_cas );
+has scanner            => ( is => 'ro', coerce => \&_coerce_scanner );
+has extractor          => ( is => 'ro', coerce => \&_coerce_extractor );
+has store_default_path => ( is => 'ro', default => sub { 'store' } );
+has snapshot_index     => ( is => 'rw', lazy_build => 1 );
+has date_parser        => ( is => 'rw', lazy_build => 1 );
 
 =head1 METHODS
 
-=head2 getConfig
-
-Returns a configuration hash that can be passed to 'new()' to re-create
-this instance of App::Casbak.
-
 =cut
-
-sub getConfig {
-	my $self= shift;
-	my $cfg= {
-		CLASS => ref $self,
-		VERSION => $VERSION,
-		cas => $self->cas->getConfig,
-		backupDir => $self->backupDir,
-	};
-	
-	# One tweak- if the store has a path (which we try to always make absolute),
-	# we convert it to be relative to the casbak dir.
-	# The new() method reverses this to make it absolute again.
-	if (defined $cfg->{cas}{store}{path}) {
-		$cfg->{cas}{store}{path}= File::Spec->abs2rel($cfg->{cas}{store}{path}, $cfg->{backupDir});
-	}
-	
-	return $cfg;
-}
 
 sub new {
 	my $class= shift;
@@ -112,33 +134,16 @@ sub new {
 	} else {
 		%p= @_;
 	}
-
-	$p{backupDir}= '.' unless defined $p{backupDir};
-	if (!$p{cas}) {
-		my $cfgFile= File::Spec->catfile($p{backupDir}, 'casbak.conf.json');
-		-f $cfgFile or croak "Missing config file '$cfgFile'\n";
-		-r $cfgFile or croak "Permission denied for '$cfgFile'\n";
-		my ($json, $cfg, $f);
-		try {
-			open($f, '<', $cfgFile)
-				and do { local $/= undef; $json= <$f> }
-				or die "$!\n";
-			$cfg= JSON->new->utf8->relaxed->decode($json);
-		}
-		catch {
-			my $err= "$_";
-			# Clean up JSON's error messages a bit...
-			if (defined($json) and ($err =~ /^(.*), at character offset (\d+)/)) {
-				my $lineNum= scalar split /\n/, substr($json, 0, $2).'x';
-				my $context= '"'.substr($json, $2, 10).'..."';
-				$err= "$1 at line $lineNum near $context\n";
-			}
-			# and now explain to the user what's going on
-			croak "Unable to load config file '$cfgFile': $err";
-		};
-		%p= (%$cfg, %p);
+	
+sub BUILD {
+	my $self= shift;
+	
+	if (! ref $self->cas) {
+		
 	}
 	
+
+	$p{backup_dir}= '.' unless defined $p{backup_dir};
 	# coersion from hash to object
 	if (ref $p{cas} eq 'HASH') {
 		my %cp= %{$p{cas}}; # make a copy; we're going to modify it
@@ -185,20 +190,10 @@ sub _ctor {
 	bless $params, $class;
 }
 
-=head2 dateParser
-
-Returns a cached instance of the parser we use in the event that
-we need to parse a date string.  This is lazy-built.
-
-=cut
-
-sub dateParser {
-	my $self= shift;
-	$self->{dateParser} ||= do {
-		require DateTime;
-		require Date::Format::Natural;
-		DateTime::Format::Natural->new;
-	};
+sub _build_date_parser {
+	require DateTime;
+	require Date::Format::Natural;
+	DateTime::Format::Natural->new;
 }
 
 =head2 canonicalDate( $date_thing )
@@ -264,29 +259,14 @@ sub canonicalDate {
 	return $date->ymd.'T'.$date->hms.'Z';
 }
 
-sub snapshotIndex {
+sub _build_snapshot_index {
 	my $self= shift;
-	$self->{snapshotIndex} ||= do {
-		open my $fh, "<", $self->snapIndexFile
-			or die "Failed to read '".$self->snapIndexFile."': $!\n";
-		my $header= <$fh>;
-		$header eq "Timestampt\tHash\tComment\n"
-			or die "Invalid snapshot index (wrong header)\n";
-		my @entries;
-		while (<$fh>) {
-			chomp;
-			my @fields= split /[\t]/, $_, 3;
-			scalar(@fields) == 3
-				or die "Invalid entry in '".$self->snapIndexFile."': \"$_\"\n";
-			push @entries, \@fields;
-		}
-		\@entries;
-	};
+	$self->_read_snapshot_index($self->backup_dir);
 }
 
 sub getSnapshot {
 	my ($self, $targetDate)= @_;
-	my $array= $self->snapshotIndex;
+	my $array= $self->snapshot_index;
 	
 	return undef unless @$array;
 	
@@ -331,7 +311,7 @@ sub saveSnapshot {
 	# Convert to standard date format
 	$metadata->{timestamp}= $self->canonicalDate($metadata->{timestamp});
 	
-	my $array= $self->snapshotIndex;
+	my $array= $self->snapshot_index;
 	# Timestamps must be in cronological order
 	# (we could insert-sort here, but people should only ever be adding "new" snapshots...)
 	!scalar(@$array)
@@ -346,27 +326,11 @@ sub saveSnapshot {
 	push @$array, [ $metadata->{timestamp}, $hash, $metadata->{comment} || '' ];
 	# and write the new index file
 	try {
-		$self->_writeSnapIndex;
+		$self->_write_snapshot_index($self->backup_dir, $array);
 	}
 	catch {
-		croak "$_\nThe entry that would have been written is: '$metadata->{timestamp} $hash'\n";
+		die "$_\nThe entry that would have been written is: '$metadata->{timestamp} $hash'\n";
 	};
-	1;
-}
-
-sub _writeSnapIndex {
-	my $self= shift;
-	my $tmpFile= $self->snapIndexFile.'.tmp';
-	open my $fh, ">", $tmpFile
-		or croak "Cannot write to '$tmpFile': $!\n";
-	print $fh "Timestampt\tHash\tComment\n";
-	for my $snap (@{$self->snapshotIndex}) {
-		print $fh join("\t", @$snap)."\n";
-	}
-	close $fh
-		or croak "Cannot save '$tmpFile': $!\n";
-	rename $tmpFile, $self->snapIndexFile
-		or croak "Cannot replace '".$self->snapIndexFile."': $!\n";
 	1;
 }
 
@@ -391,7 +355,7 @@ sub init {
 
 	# Make sure module is loaded, so we can inspect its constructor params
 	$params->{cas}{store}{CLASS}->can('new')
-		or _requireClass($params->{cas}{store}{CLASS});
+		or require_module($params->{cas}{store}{CLASS});
 
 	my %validParams= map { $_ => 1 } $params->{cas}{store}{CLASS}->_ctor_params;
 
@@ -409,6 +373,7 @@ sub init {
 	my $self= $class->new($params);
 
 	# success? then save out the parameters
+	$class->_initialize_backup(backup_dir => $dir, cfg => 
 	my $cfg= $self->getConfig;
 	my $json= JSON->new->utf8->pretty->canonical->encode($cfg);
 	my $fd;
@@ -512,5 +477,112 @@ sub importTree {
 	return $resolvedDest->[0];
 }
 
+XXX
+	# coercion of store parameters to Store object
+	if (!ref $p{store}) {
+		$p{store}= { CLASS => $p{store} };
+	}
+	if (ref $p{store} eq 'HASH') {
+		$p{store}= { %{$p{store}} }; # clone before we make changes
+		my $class= delete $p{store}{CLASS} || 'DataStore::CAS::Simple';
+		check_module_name($class);
+		use_module($class, delete $p{store}{VERSION});
+		$class->isa('DataStore::CAS')
+			or croak "'$class' is not a valid CAS class\n";
+		$p{store}= $class->new($p{store});
+	}
+	
+	# coercion of scanner parameters to Scanner object
+	$p{scanner} ||= { };
+	if (!ref $p{scanner}) {
+		$p{scanner}= { CLASS => $p{scanner} };
+	}
+	if (ref $p{scanner} eq 'HASH') {
+		$p{scanner}= { %{$p{scanner}} }; # clone before we make changes
+		my $class= delete $p{scanner}{CLASS} || 'DataStore::CAS::FS::Scanner';
+		check_module_name($class);
+		use_module($class, delete $p{scanner}{VERSION});
+		$class->isa('DataStore::CAS::FS::Scanner')
+			or croak "'$class' is not a valid Scanner class\n";
+		$p{scanner}= $class->new($p{scanner});
+	}
+
+sub _load_config {
+	my ($class, $backup_dir)= @_;
+	my $cfg_file= File::Spec->catfile($backup_dir, $_config_filename);
+	-f $cfg_file or die "Missing config file '$cfg_file'\n";
+	-r $cfg_file or die "Permission denied for '$cfg_file'\n";
+	my ($f, $json, $cfg);
+	try {
+		open($f, '<', $cfg_file)
+			and defined do { local $/= undef; $json= <$f> }
+			or die "$!\n";
+		$cfg= JSON->new->utf8->relaxed->decode($json);
+	}
+	catch {
+		my $err= "$_";
+		chomp($err);
+		# Clean up JSON's error messages a bit...
+		if (defined($json) and ($err =~ /^(.*), at character offset (\d+)/)) {
+			my $lineNum= scalar split /\n/, substr($json, 0, $2).'x';
+			my $context= '"'.substr($json, $2, 10).'..."';
+			$err= "$1 at line $lineNum near $context";
+		}
+		# and now explain to the user what's going on
+		die "Unable to load config file '$cfg_file': $err\n";
+	};
+	return $cfg;
+}
+
+sub _initialize_backup {
+	my ($class, $backup_dir, $cfg)= @_;
+	my $cfg_file= File::Spec->catfile($backup_dir, $_config_filename);
+	my $json= JSON->new->utf8->pretty->canonical->encode($cfg);
+	my $fd;
+	open($fd, ">", $cfg_file) && (print $fd $json) && close($fd)
+		or die "Error writing configuration file '$cfg_file': $!\n";
+
+	my $log_file= File::Spec->catfile($backup_dir, $_log_filename);
+	open($fd, ">", $log_file) && close($fd)
+		or die "Error writing log file '$log_file': $!\n";
+
+	$class->_write_snapshot_index($backup_dir, []);
+}
+
+sub _write_snapshot_index {
+	my ($class, $backup_dir, $snapshot_array)= @_;
+	my $index_file= File::Spec->catfile($backup_dir, $_snapshots_filename);
+	my $temp_file= $index_file . '.tmp';
+	open my $fh, ">", $temp_file
+		or die "Cannot write to '$temp_file': $!\n";
+	print $fh "Timestampt\tHash\tComment\n";
+	for my $snap (@$snapshot_array) {
+		print $fh join("\t", @$snap)."\n";
+	}
+	close $fh
+		or die "Cannot save '$temp_file': $!\n";
+	rename $temp_file, $index_file
+		or die "Cannot replace '$index_file': $!\n";
+	1;
+}
+
+sub _read_snapshot_index {
+	my ($class, $backup_dir)= @_;
+	my $index_file= File::Spec->catfile($backup_dir, $_snashots_filename);
+	open my $fh, "<", $index_file
+		or die "Failed to read '$index_file': $!\n";
+	my $header= <$fh>;
+	$header eq "Timestampt\tHash\tComment\n"
+		or die "Invalid snapshot index (wrong header): '$index_file'\n";
+	my @entries;
+	while (<$fh>) {
+		chomp;
+		my @fields= split /[\t]/, $_, 3;
+		scalar(@fields) == 3
+			or die "Invalid entry in '$index_file': \"$_\"\n";
+		push @entries, \@fields;
+	}
+	\@entries;
+}
 
 1;

@@ -3,6 +3,7 @@ use strict;
 use warnings;
 use Try::Tiny;
 use Carp;
+use Module::Runtime;
 
 # Load a package for a casbak command (like 'ls', 'init', etc)
 # Returns package name on success, false on nonexistent, and throws
@@ -10,35 +11,36 @@ use Carp;
 sub LoadSubcommand {
 	my ($class, $cmdName)= @_;
 	
-	($cmdName =~ /^[A-Za-z]+$/)
+	# Convert underscore and hyphen to CamelCase
+	my $submodule= join '', map { uc(substr($_,0,1)) . lc(substr($_,1)) } split /[-_]+/, $cmdName;
+	# Is it a legal sub-package name?
+	($submodule =~ /^[A-Za-z]+$/)
 		or return 0;
 	
-	my $pkg= 'App::Casbak::Cmd::'.uc(substr($cmdName,0,1)).lc(substr($cmdName,1));
-	
-	my ($fail, $err)= do {
-		local $@;
-		((not eval "require $pkg;"), $@);
+	my $pkg= 'App::Casbak::Cmd::' . $submodule;
+	my $err;
+	try {
+		Module::Runtime::require_module($pkg);
+	}
+	catch {
+		$err= $_;
 	};
 	
-	if ($fail) {
+	if (defined $err) {
 		# Try to distinguish between module errors and nonexistent modules.
 		my $commands= $class->FindAllCommands();
-		for (@$commands) {
-			if ($_ eq $pkg) {
-				# looks like a bug in the package.
-				die $err;
-			}
-		}
-		return '';
+		return ''
+			unless grep { $_ eq $pkg } @$commands;
+		# looks like a bug in the package.
+		die $err;
 	}
-	else {
-		# Make sure the package implemented the required methods
-		for my $mth (qw: ShortDescription applyArguments run getHelpPOD :) {
-			die "Missing required method '$mth' in $pkg\n"
-				if !$pkg->can($mth) or $pkg->can($mth) eq __PACKAGE__->can($mth);
-		}
-		return $pkg;
+
+	# Make sure the package implemented the required methods
+	for my $mth (qw: ShortDescription applyArguments run getHelpPOD :) {
+		die "Missing required method '$mth' in $pkg\n"
+			if !$pkg->can($mth) or $pkg->can($mth) eq __PACKAGE__->can($mth);
 	}
+	return $pkg;
 }
 
 sub FindAllCommands {
@@ -131,7 +133,7 @@ sub getHelpPOD {
 
 	# Try loading them all, but handle errors gracefully
 	foreach my $pkg (@$commands) {
-		try { App::Casbak::_requireClass($pkg); };
+		try { Module::Runtime::require_module($pkg); };
 	}
 
 	# Now, format each command using POD notation, to make the body of the COMMANDS section.
