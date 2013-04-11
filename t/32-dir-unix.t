@@ -45,11 +45,14 @@ isa_ok( my $file= $sto->get($hash), 'DataStore::CAS::File', 'file object for dir
 isa_ok( my $dir= DataStore::CAS::FS::Dir->new($file), 'DataStore::CAS::FS::Dir::Unix', 'created dir object');
 
 for my $e (@expected) {
-	ok( my $entry= $dir->get_entry($e->{name}), "find entry $e->{name}" )
-		or diag Dumper($dir);
-	for my $k (keys %$e) {
-		is( $entry->$k(), $e->{$k}, "match field $k" );
-	}
+	subtest $e->{name} => sub {
+		ok( my $entry= $dir->get_entry($e->{name}), "find entry $e->{name}" )
+			or diag Dumper($dir);
+		for my $k (keys %$e) {
+			is( $entry->$k(), $e->{$k}, "match field $k" );
+		}
+		done_testing;
+	};
 }
 
 done_testing;

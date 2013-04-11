@@ -6,7 +6,7 @@ use Carp;
 use Try::Tiny;
 
 use parent 'DataStore::CAS';
-our $VERSION = '0.01';
+our $VERSION = '0.0100';
 
 =head1 NAME
 

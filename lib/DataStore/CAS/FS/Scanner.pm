@@ -202,7 +202,7 @@ sub scan_dir_ent {
 		$attrs{unix_inode}= $stat->[1];
 		$attrs{unix_nlink}= $stat->[3];
 		$attrs{unix_blocksize}= $stat->[11];
-		$attrs{unix_blocks}= $stat->[12];
+		$attrs{unix_blockcount}= $stat->[12];
 	}
 	if ($self->include_acl) {
 		# TODO

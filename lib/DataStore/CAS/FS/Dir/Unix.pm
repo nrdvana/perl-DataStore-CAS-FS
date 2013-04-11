@@ -22,7 +22,7 @@ __PACKAGE__->RegisterFormat('Unix', __PACKAGE__);
 
 our %_TypeToCode= ( file => 'f', dir => 'd', symlink => 'l', chardev => 'c', blockdev => 'b', pipe => 'p', socket => 's' );
 our %_CodeToType= map { $_TypeToCode{$_} => $_ } keys %_TypeToCode;
-our @fieldOrder= qw( code name value size unix_uid unix_gid unix_mode unix_atime unix_mtime unix_ctime unix_dev unix_inode unix_nlink unix_blocksize unix_blocks );
+our @fieldOrder= qw( code name value size unix_uid unix_gid unix_mode unix_atime unix_mtime unix_ctime unix_dev unix_inode unix_nlink unix_blocksize unix_blockcount );
 sub SerializeEntries {
 	my ($class, $entry_list, $metadata)= @_;
 	defined $metadata->{_}
@@ -195,7 +195,7 @@ sub unix_dev        { length($_[0][11])? $_[0][11] : $_[0][0]{def}{dev} }
 sub unix_inode      { $_[0][12] }
 sub unix_nlink      { $_[0][13] }
 sub unix_blocksize  { $_[0][14] }
-sub unix_blocks     { $_[0][15] }
+sub unix_blockcount { $_[0][15] }
 
 *modify_ts = *unix_mtime;
 sub unix_user       { $_[0][0]{umap}{ $_[0]->unix_uid } }
@@ -204,7 +204,7 @@ sub unix_group      { $_[0][0]{gmap}{ $_[0]->unix_gid } }
 sub as_hash {
 	return { map { $_ => $_[0]->$_() } qw: type name ref size unix_uid
 		unix_gid unix_mode unix_atime unix_mtime unix_ctime unix_dev
-		unix_inode unix_nlink unix_blocksize unix_blocks : };
+		unix_inode unix_nlink unix_blocksize unix_blockcount : };
 }
 
 1;

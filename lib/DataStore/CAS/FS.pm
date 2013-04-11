@@ -9,6 +9,9 @@ use DataStore::CAS::FS::Dir;
 require File::Spec;
 
 our $VERSION= '0.0100';
+sub VersionParts {
+	return (int($VERSION), (int($VERSION*100)%100), (int($VERSION*10000)%100));
+}
 
 =head1 NAME
 
@@ -40,14 +43,11 @@ DataStore::CAS::FS - Filesystem on top of Content-Addressable Storage
   # Open a path within the filesystem
   $handle= $casfs->path('','1','2','3','myfile')->open;
   
-  # Write out a new tree, composed of this tree and some alterations.
-  # (returns a new FS object to view that tree)
-  $casfs_2= $casfs->rewrite(
-    paths => [
-      [ '', '1', '2', '3', [ name => 'myfile', hash => $some_new_file ] ],
-      [ '', '1', '2', [ name => 'myfile_copy', hash => $some_new_file ] ],
-    ],
-  );
+  # Make some changes
+  $casfs->apply_path(['', '1', '2', 'myfile'], { ref => $some_new_file });
+  $casfs->apply_path(['', '1', '2', 'myfile_copy'], { ref => $some_new_file });
+  # Commit them
+  $casfs->commit();
   
 =head1 DESCRIPTION
 
@@ -94,13 +94,32 @@ directories in an efficient manner for your system.
 
 Read-only.  An instance of a class implementing 'DataStore::CAS'.
 
-=head2 volume_dir
+=head2 root_entry
 
-Read-only.  A directory which contains the volume roots.  For UNIX, this is
-a directory that contains one entry with an empty name (""), which is the
-UNIX root dir.  For backups made on Windows, the volume root might contain
-'C', 'D', or etc.  This only really matters for symlinks; UNIX symlinks will
-always refer to the '' volume.
+A DataStore::CAS::Dir::Entry object describing the root of the tree.
+Must be of type "dir".  Should have a name of "", but not required.
+You can pick an arbitrary directory for a chroot-like-effect, but beware
+of broken symlinks.
+
+root_entry refers to an **immutable** directory.  If you make in-memory
+overrides to the filesystem using apply_path or the various convenience
+methods, root_entry will continue to refer to the original static filesystem.
+If you then C<commit()> those changes, root_entry will be updated to refer
+to the new filesystem.
+
+You can create a list of filesystem snapshots by saving a copy of root_entry
+each time you call C<commit()>.  They will all continue to exist within the
+CAS.  Cleaning up the CAS is left as an exercise for the reader. (though
+utility methods to help with this are planned)
+
+=head2 case_insensitive
+
+Read-only.  Defaults to false.  If set to true in the constructor, this causes
+all directory entries to be compared in a case-insensitive manner, and all
+directory objects to be loaded with case-insensitive lookup indexes.
+
+Be careful not to share a directory cache between FS objects with opposing
+case_insensitive settings.
 
 =head2 hash_of_null
 
@@ -123,13 +142,29 @@ value instead of recalculating the hash of an empty dir.
 =cut
 
 sub store             { $_[0]{store} }
-sub volume_dir        { $_[0]{volume_dir} }
 sub root_entry        { $_[0]{root_entry} }
+sub case_insensitive  { $_[0]{case_insensitive} }
 
 sub hash_of_null      { $_[0]->store->hash_of_null }
 sub hash_of_empty_dir { $_[0]{hash_of_empty_dir} }
 
 sub dir_cache         { $_[0]{dir_cache} }
+
+# _path_overrides is a tree of nodes, each of the form:
+# $node= {
+#   entry   => $Dir_Entry,  # mandatory
+#   dir     => $CAS_FS_Dir, # optional, created on demand
+#   subtree => {
+#     KEY1 => $node1,
+#     KEY2 => $node2,
+#     ...
+#   }
+# }
+#
+#  If 'case_insensitive' is true, the keys will all be upper-case, but the $Dir_Entry
+#  objects will contain the correct-case name.
+#
+sub _path_overrides   { $_[0]{_path_overrides} }
 
 =head1 METHODS
 
@@ -173,28 +208,6 @@ sub new {
 	$p{hash_of_empty_dir}= $class->_calc_empty_dir_hash($p{store})
 		unless defined $p{hash_of_empty_dir};
 
-	if (defined $p{volume_dir}) {
-		# Load directory, if they gave us a hash or File.
-		if (!ref $p{volume_dir} or !$p{volume_dir}->can('get_entry')) {
-			my $hash= ref($p{volume_dir}) && ref($p{volume_dir})->can('hash')
-				? $p{volume_dir}->hash
-				: "$p{volume_dir}";
-			my $dir= $p{dir_cache}->get($hash);
-			if (!$dir) {
-				my $file= $p{store}->get($hash)
-					or croak "Volume directory '$hash' does not exist in CAS";
-				# Wrap the dir decoding with try/catch so that we can emit a better error message
-				try {
-					$dir= DataStore::CAS::FS::Dir->new($file);
-				} catch {
-					croak "Parameter 'volume_dir' does not refer to a valid directory: $_";
-				};
-				$p{dir_cache}->put($dir);
-			}
-			$p{volume_dir}= $dir;
-		}
-	}
-	
 	# Root is a more flexible parameter than 'root_entry'.  If they specify
 	# it, we convert it to the equivalent root_entry parameter.
 	if (defined $p{root}) {
@@ -238,20 +251,6 @@ sub new {
 	}
 
 	$class->_ctor(\%p);
-}
-
-sub get_volume_root {
-	my ($self, $volume_name)= @_;
-	$volume_name= '' unless defined $volume_name;
-	# If this FS instance has volume support, volume_dir will be a Dir object
-	# and root_entry will be undef.  Else root_entry will be a Dir::Entry and
-	# volume_dir will be undef.  In the second case, we pretend that there is
-	# a volume_dir with one entry named ''.
-	return $self->volume_dir
-		? $self->volume_dir->get_entry($volume_name)
-		: $volume_name eq ''
-			? $self->{root_entry}
-			: undef;
 }
 
 =head2 get( $hash [, \%flags ])
@@ -332,7 +331,7 @@ sub validate   { (shift)->store->validate(@_) }
 Returns a DataStore::CAS::FS::Path object which provides frendly
 object-oriented access to several other methods of CAS::FS. This object does
 *nothing* other than curry parameters, for your convenience.  In particular,
-the path isn't resolved and might not be valid.
+the path isn't resolved until you try to use it, and might not be valid.
 
 See resolve_path for notes about @path_names.  Especially note that your path
 needs to start with the volume name, which will usually be ''.  Note that
@@ -402,9 +401,13 @@ If the path doesn't exist, any missing directories will be given placeholder
 Dir::Entry objects.  You can test whether the path was resolved completely by
 checking whether $result->[-1]->type is defined.
 
-=item chroot => \$DataStore_CAS_FS_Dir_Entry
+=item mkdir => 1 || 2
 
-Allows you to pick a custom root directory. (also affects symlinks)
+If mkdir is 1, missing directories will be created on demand.
+
+If mkdir is 2, 
+
+=back
 
 =cut
 
@@ -412,10 +415,14 @@ sub resolve_path {
 	my ($self, $path, $flags)= @_;
 	$flags ||= {};
 	
-	my $ret= $self->_resolve_path($path, $flags->{partial});
+	my $ret= $self->_resolve_path($path, { follow_symlinks => 1, %$flags });
 	
 	# Array means success, scalar means error.
-	return $ret if ref($ret) eq 'ARRAY';
+	if (ref($ret) eq 'ARRAY') {
+		# The user wants directory entries, not "nodes".
+		$_= $_->{entry} for @$ret;
+		return $ret;
+	}
 
 	# else, got an error...
 	${$flags->{error_out}}= $ret
@@ -425,55 +432,46 @@ sub resolve_path {
 }
 
 sub _resolve_path {
-	my ($self, $path, $createMissing)= @_;
+	my ($self, $path, $flags)= @_;
 
-	my @path= ref($path)? @$path : do {
-		my ($vol, $dir, $file)= File::Spec->splitpath($path);
-		($vol, (grep { length } File::Spec->splitdir($dir)), $file);
-	};
-
-	my @dirents= ( $self->get_volume_root($path[0]) );
-	defined $dirents[0]
-		or return "No such volume '$path[0]'";
-
+	my @path= ref($path)? @$path : File::Spec->splitdir($path);
+	my @nodes= ( $self->_path_overrides || { entry => $self->root_entry } );
+	
 	return "Root directory must be a directory"
-		unless $dirents[0]->type eq 'dir';
+		unless $nodes[0]{entry}->type eq 'dir';
+
+	my @mkdir_defaults= %{$flags->{mkdir_defaults}}
+		if ref $flags->{mkdir_defaults};
+	push @mkdir_defaults, type => 'dir', ref => undef;
 
 	while (@path) {
-		my $ent= $dirents[-1];
+		my $ent= $nodes[-1]{entry};
 		my $dir;
 
 		# Support for "symlink" is always UNIX-based (or compatible)
 		# As support for other systems' symbolic paths are added, they
 		# will be given unique '->type' values, and appropriate handling.
-		if ($ent->type eq 'symlink') {
+		if ($ent->type eq 'symlink' and $flags->{follow_symlinks}) {
 			# Sanity check on symlink entry
 			my $target= $ent->ref;
 			defined $target and length $target
 				or return 'Invalid symbolic link "'.$ent->name.'"';
 
 			unshift @path, split('/', $target, -1);
-			pop @dirents;
+			pop @nodes;
 			
 			# If an absolute link, we start over from the root
-			@dirents= ( $dirents[0] )
+			@nodes= ( $nodes[0] )
 				if $path[0] eq '';
 
 			next;
 		}
 
-		return 'Cannot descend into directory entry "'.$ent->name.'" of type "'.$ent->type.'"'
-			unless ($ent->type eq 'dir');
-
-		# If no hash listed, directory was not stored. (i.e. --exclude option during import)
-		if (defined $ent->ref) {
-			$dir= $self->get_dir($ent->ref);
-			defined $dir
-				or return 'Failed to open directory "'.$ent->name.'"';
-		}
-		else {
-			return 'Directory "'.File::Spec->catdir(map { $_->name } @dirents).'" is not present in storage'
-				unless $createMissing;
+		if ($ent->type ne 'dir') {
+			return 'Cannot descend into directory entry "'.$ent->name.'" of type "'.$ent->type.'"'
+				unless $flags->{mkdir} > 1;
+			# Here, mkdir flag converts entry into a directory
+			$nodes[-1]{entry}= $ent->clone(@mkdir_defaults);
 		}
 
 		# Get the next path component, ignoring empty and '.'
@@ -484,25 +482,246 @@ sub _resolve_path {
 		# This is the same way the kernel does it, but perhaps shell behavior is preferred...
 		if ($name eq '..') {
 			return "Cannot access '..' at root directory"
-				unless @dirents > 1;
-			pop @dirents;
+				unless @nodes > 1;
+			pop @nodes;
+			next;
 		}
-		# If we're working on an available directory and the sub-entry exists, append it.
-		elsif (defined $dir and defined ($ent= $dir->get_entry($name))) {
-			push @dirents, $ent;
-		}
-		# Else it doesn't exist and we either fail or create it.
-		else {
-			return 'No such directory entry "'.$name.'" at "'.File::Spec->catdir(map { $_->name } @dirents).'"'
-				unless $createMissing;
 
-			# Here, we create a dummy entry for the $createMissing feature.
-			# It is a directory if there are more path components to resolve.
-			push @dirents, DataStore::CAS::FS::Dir::Entry->new(name => $name, (@path? (type=>'dir') : ()));
+		# If this directory has an in-memory override for this name, use it
+		my $subnode;
+		if ($nodes[-1]{subtree}) {
+			my $key= $self->case_insensitive? uc $name : $name;
+			$subnode= $nodes[-1]{subtree}{$key};
 		}
+		if (!defined $subnode) {
+			# Else we need to find the name within the current directory
+
+			# load it if it isn't cached
+			if (!defined $nodes[-1]{dir} && defined $ent->ref) {
+				defined ( $nodes[-1]{dir}= $self->get_dir($ent->ref) )
+					or return 'Failed to open directory "'.$ent->name.' ('.$ent->ref.')"';
+			}
+
+			# If we're working on an available directory, try loading it
+			my $subent= $nodes[-1]{dir}->get_entry($name)
+				if defined $nodes[-1]{dir};
+			$subnode= { entry => $subent }
+				if defined $subent;
+		}
+
+		# If we haven't found one, or if it is 0 (deleted), either create or die.
+		if (!$subnode) {
+			# If we're supposed to create virtual entries, do so
+			if ($flags->{mkdir} or $flags->{partial}) {
+				$subnode= {
+					entry => DataStore::CAS::FS::Dir::Entry->new(
+						name => $name,
+						# It is a directory if there are more path components to resolve.
+						(@path? @mkdir_defaults : ())
+					)
+				};
+			}
+			# Else it doesn't exist and we fail.
+			else {
+				my $dir_path= File::Spec->catdir(map { $_->{entry}->name } @nodes);
+				return "Directory \"$dir_path\" is not present in storage"
+					unless defined $nodes[-1]{dir};
+				return "No such directory entry \"$name\" at \"$dir_path\"";
+			}
+		}
+
+		push @nodes, $subnode;
 	}
 	
-	\@dirents;
+	\@nodes;
+}
+
+=head2 apply_path( $path, $Dir_Entry, $flags )
+
+Temporarily override a directory entry at $path.  If $Dir_Entry is false, this
+will cause $path to be unlinked.  If the name of Dir_Entry differs from the
+final component of $path, it will act like a rename (which is the same as just
+unlinking the old path and creating the new path)  If Dir_Entry is missing a
+name, it will default to the final element of $path.
+
+No fields of the old dir entry are used; if you want to preserve some of them,
+you need to do that yourself (but see the handy ->clone(%overrides) method of
+Dir::Entry)
+
+If $path refers to nonexistent directories, they will be created as with
+"mkdir -p", and receive the default metadata of C<$flags{default_dir_fields}>
+(by default, nothing)  If $path travels through a non-directory (aside from
+symlinks, unless C<$flags{follow_symlinks}> is set to 0) this will throw an
+exception, unless you specify C<$flags{force_create}> which causes an
+offending directory entry to be overwritten by a new subdirectory.
+
+Note in particluar that if you specify
+
+  apply_path( "/a_symlink/foo", $Dir_Entry, { follow_symlinks => 0, force_create => 1 })
+
+"a_symlink" will be deleted and replaced with an actual directory.
+
+None of the changes from apply_path are committed to the CAS until you call
+C<commit()>.  Also, C<root_entry> does not change until you call C<commit()>,
+though the root entry shown by "resolve_path" does.
+
+You can return to the last committed state by calling C<rollback()>, which is
+conceptually equivalent to C< $fs= DataStore::CAS::FS->new( $fs->root_entry ) >.
+
+=cut
+
+sub set_path {
+	my ($self, $path, $newent, $flags)= @_;
+
+	my $nodes= $self->_resolve_path($path, { follow_symlinks => 1, partial => 1, %$flags });
+	croak $nodes unless ref $nodes;
+
+	# replace the final entry, after applying defaults
+	if (!$newent) {
+		$newent= 0; # 0 means unlink
+	}
+	elsif (!defined $newent->name or !defined $newent->type) {
+		$newent= $newent->clone(
+			name => $newent->name // $nodes->[-1]->name,
+			type => $newent->type // $nodes->[-1]->type // 'file',
+		);
+	}
+	$nodes->[-1]{entry}= $newent;
+	$self->_apply_overrides($nodes);
+}
+
+sub update_path {
+	my ($self, $path, $changes, $flags)= @_;
+
+	my $nodes= $self->_resolve_path($path, { follow_symlinks => 1, partial => 1, %{$flags||{}} });
+	croak $nodes unless ref $nodes;
+
+	# update the final entry, after applying defaults
+	my $entref= \$nodes->[-1]{entry};
+	$$entref= $$entref->clone(
+		defined $$entref->type? () : ( type => 'file' ),
+		ref $changes eq 'HASH'? %$changes
+			: ref $changes eq 'ARRAY'? @$changes
+			: croak 'parameter "changes" must be a hashref or arrayref'
+	);
+
+	$self->_apply_overrides($nodes);
+}
+
+sub _apply_overrides {
+	my ($self, $nodes)= @_;
+	# Ensure that each node is connected to the previous via 'subtree'.
+	# When we find the first connected node, we assume the rest are connected.
+	my $i;
+	for ($i= $#$nodes; $i > 0; $i--) {
+		my $key= $self->case_insensitive? uc $nodes->[$i]{entry}->name : $nodes->[$i]{entry}->name;
+		my $childref= \$nodes->[$i-1]{subtree}{$key};
+		last if $$childref and $$childref eq $nodes->[$i];
+		$$childref= $nodes->[$i];
+	}
+	# Finally, make sure the root override is set
+	$self->{_path_overrides}= $nodes->[0]
+		unless $i;
+	1;
+}
+
+sub mkdir {
+	my ($self, $path)= @_;
+	$self->set_path($path, { type => 'dir', ref => $self->hash_of_empty_dir });
+}
+
+sub touch {
+	my ($self, $path)= @_;
+	$self->update_path($path, { mtime => time() });
+}
+
+sub unlink {
+	my ($self, $path)= @_;
+	$self->set_path($path, undef);
+}
+*rmdir = *unlink;
+
+# TODO: write copy and move and rename
+
+=head2 rollback
+
+Revert the FS to the state of the last commit, or the initial state.
+
+This basically just discards all the in-memory overrides created with
+"apply_path" or its various convenience methods.
+
+=cut
+
+sub rollback {
+	my $self= shift;
+	$self->{_path_overrides}= undef;
+	1;
+}
+
+=head2 commit
+
+Merge all in-memory overrides from "apply_path" with the directories
+they override to create new directories, and store those new directories
+in the CAS.
+
+After this operation, the root_entry will be changed to reflect the new
+tree.
+
+=cut
+
+sub commit {
+	my $self= shift;
+	if ($self->_path_overrides) {
+		my $root_node= $self->_path_overrides;
+		croak "Root override must be a directory"
+			unless $root_node->{entry}->type eq 'dir';
+		my $hash= $self->_commit_recursive($root_node);
+		$self->{root_entry}= $root_node->{entry}->clone(ref => $hash);
+		$self->{_path_overrides}= undef;
+	}
+	1;
+}
+
+# Takes a subtree of the datastructure generated by apply_path and encodes it
+# as a directory, recursively encoding any subtrees first, then returns the
+# hash of that subdir.
+sub _commit_recursive {
+	my ($self, $node)= @_;
+
+	my $subtree= $node->{subtree} || {};
+	my @entries;
+
+	# Walk the directory entries and filter out any that have been overridden.
+	if (defined $node->{dir} || defined $node->{entry}->ref) {
+		($node->{dir} ||= $self->get_dir($node->{entry}->ref))
+			or croak 'Failed to open directory "'.$node->{entry}->name.' ('.$node->{entry}->ref.')"';
+		
+		my ($iter, $ent);
+		for ($iter= $node->{dir}->iterator; defined ($ent= $iter->()); ) {
+			my $key= $self->case_insensitive? uc $ent->name : $ent->name;
+			push @entries, $ent
+				unless defined $subtree->{$key};
+		}
+	}
+
+	# Now append the modified entries.
+	# Skip the "0"s, which represent files to unlink.
+	for (grep { ref $_ } values %$subtree) {
+		# Check if node is a dir and needs committed
+		if ($_->{subtree} and $_->{entry}->type eq 'dir') {
+			my $hash= $self->_commit_recursive($_);
+			$_->{entry}= $_->{entry}->clone( ref => $hash );
+			delete $_->{subtree};
+			delete $_->{dir};
+		}
+		
+		push @entries, $_->{entry};
+	}
+	# Now re-encode the directory, using the same type as orig_dir
+	return $self->hash_of_empty_dir
+		unless @entries;
+	my $dir_cls= $node->{dir}? ref $node->{dir} : 'DataStore::CAS::FS::Dir';
+	return $self->put_scalar( $dir_cls->SerializeEntries(\@entries, {}) );
 }
 
 =head1 EXTENDING

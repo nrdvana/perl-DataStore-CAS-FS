@@ -285,29 +285,44 @@ sub SerializeEntries {
 
 =head2 $dir->iterator
 
-Returns an iterator object with methods of '->next' and '->eof'.
+Returns an iterator over the entries in the directory.
 
-Calling 'next' returns a Dir::Entry object, or undef if at the end of the
-directory.  Entries are not guaranteed to be in any order, or even to be
+The iterator is a coderef where each successive call returns the next
+Dir::Entry.  Returns undef at the end of the list.
+Entries are not guaranteed to be in any order, or even to be
 unique names.  (in particular, because of case sensitivity rules)
 
 =cut
 
 sub iterator {
-	return DataStore::CAS::FS::Dir::EntryIter->new($_[0]{_entries});
+	my $list= $_[0]{_entries};
+	my ($i, $n)= (0, scalar @$list);
+	return sub { $i < $n? $list->[$i++] : undef };
 }
 
-=head2 $ent= $dir->get_entry($name)
+=head2 $ent= $dir->get_entry($name, %flags)
 
-Get a directory entry by name.  The name is case-sensitive.
-(Expect to see a second parameter '\%flags' sometime in the future)
+Get a directory entry by name.
 
 =cut
 sub get_entry {
-	return (
-		($_[0]{_entry_name_map} ||= { map { $_->name => $_ } @{$_[0]{_entries}} })
-			->{$_[1]}
-	);
+	my ($self, $name, $flags)= @_;
+	return $flags->{case_insensitive}?
+		($self->{_entry_name_map_caseless} ||= do {
+			my (%lookup, $ent, $iter);
+			for ($iter= $self->iterator; defined ($ent= $iter->()); ) {
+				$lookup{uc $ent->name}= $ent
+			}
+			\%lookup;
+		})->{uc $name}
+		:
+		($self->{_entry_name_map} ||= do {
+			my (%lookup, $ent, $iter);
+			for ($iter= $self->iterator; defined ($ent= $iter->()); ) {
+				$lookup{$ent->name}= $ent
+			}
+			\%lookup;
+		})->{$name};
 }
 
 =head1 EXTENDING
@@ -505,35 +520,6 @@ sub _readall {
 }
 
 
-package DataStore::CAS::FS::Dir::EntryIter;
-use strict;
-use warnings;
-
-=head2 DataStore::CAS::FS::Dir::EntryIter->new( \@entries )
-
-This is a very simple iterator class which takes an arrayref of Dir::Entry
-and iterates it.  If you have your directory entries in an array, this
-makes a nice on-line implementation of the ->iterator method.
-
-Don't bother trying to subclass it; custom iterators don't need a class
-hierarchy, just a 'next' and 'eof' method.
-
-=cut
-
-sub new {
-	bless { entries => $_[1], i => 0, n => scalar( @{$_[1]} ) }, $_[0];
-}
-
-sub next {
-	return $_[0]{entries}[ $_[0]{i}++ ]
-		if $_[0]{i} < $_[0]{n};
-	return undef;
-}
-
-sub eof {
-	return $_[0]{i} >= $_[0]{n};
-}
-
 $INC{'DataStore/CAS/FS/Dir/Entry.pm'}= 1;
 package DataStore::CAS::FS::Dir::Entry;
 use strict;
@@ -542,10 +528,7 @@ use warnings;
 =head1 Dir::Entry
 
 DataStore::CAS::FS::Dir::Entry is a super-light-weight class.  More of an
-interface, really.
-
-It has no public constructor, and will be constructed by a Dir object or
-subclass.  The Dir::Entry interface contains the following read-only
+interface, really.  The Dir::Entry interface contains the following read-only
 accessors:
 
 =head1 Dir::Entry ACCESSORS
@@ -556,7 +539,7 @@ The name of this entry within its directory.
 
 The directory object should always return normal perl unicode strings, rather than
 a string of raw bytes.  (if the raw filename wasn't a valid unicode string, it
-should have been converted to values 0..255 in the unicode charset)
+should have been converted to codepoints 0..255)
 
 In other words, the name should always be platform-neutral.
 
@@ -569,11 +552,18 @@ As support for other systems' symbolic links is added, new type strings will
 be added to this list, and the type will determine how to interpret the
 C<ref> value.
 
+Type must always be defined when stored, though instances with an undefined
+type might exist temporarily while building a new filesystem.
+
 =head2 ref
 
-The store's checksum of the data in the referenced file or directory.
+For file or dir: the store's checksum of the referenced data.
 
-For symlink, the path.  For blockdev and chardev, the device node.
+For symlink: the path as a string of path parts separated by '/'.
+
+For blockdev and chardev: the device node as a string of "$major,$minor".
+
+Ref is allowed to be undefined (regardless of type) if the data is not known.
 
 =head2 size
 
@@ -638,31 +628,72 @@ The block count reported by lstat.
 
 =cut
 
-use Scalar::Util 'reftype';
+# We expect other subclasses to be based on different native objects, like
+#  arrays, so our accessor pulls from the 'as_hash' so that it can safely
+#  return undef if the subclass doesn't support it.
+BEGIN {
+	eval "sub $_ { \$_[0]->as_hash->{$_} }; 1" or die $@
+		for qw(
+			name
+			type
+			ref
+			size
+			create_ts
+			modify_ts
+			unix_uid
+			unix_user
+			unix_gid
+			unix_group
+			unix_mode
+			unix_atime
+			unix_ctime
+			unix_mtime
+			unix_dev
+			unix_inode
+			unix_nlink
+			unix_blocksize
+			unix_blockcount
+		);
+}
+
 
 =head1 Dir::Entry METHODS
 
-=head2 new(\%hash)
+=head2 new( %fields | \%fields )
 
 The default constructor *uses* the hashref you pass to it. (it does not clone)
 This should be ok, because the Dir::Entry objects should never be modified.
 We don't yet enforce that though, so be careful what you pass to it.
 
+A second oddity is that if you call "->new" on an object instead of a package,
+it will supply all the fields of the object as defaults, and possibly not
+return the same class as the original.
+
 =cut
 
 sub new {
 	my $class= shift;
-	my $hash= (scalar(@_) eq 1 && ref $_[0] eq 'HASH')? $_[0] : { @_ };
+	my $hash= (@_ == 1 and CORE::ref $_[0] eq 'HASH')? $_[0] : { @_ };
 	bless \$hash, $class;
 }
 
-# We expect other subclasses to be based on different native objects, like
-#  arrays, so our accessor pulls from the 'as_hash' so that it can safely
-#  return undef if the subclass doesn't support it.
-{ eval "sub $_ { \$_[0]->as_hash->{$_} }; 1" or die $@
-  for qw: name type ref size create_ts modify_ts
-	unix_uid unix_user unix_gid unix_group unix_mode unix_atime unix_ctime
-	unix_mtime unix_dev unix_inode unix_nlink unix_blocksize unix_blocks :;
+=head2 clone( %overrides )
+
+Create a new directory entry, with some fields overridden.
+
+Most implementations will simply call C<new( %{$self->as_hash}, %overrides )>,
+but in some implementations it might not be possible or practical to apply
+the requested overrides, so you might get back a different class than the
+original.
+
+=cut
+
+sub clone {
+	my $self= shift;
+	CORE::ref($self)->new(
+		%{$self->as_hash},
+		(@_ == 1 and CORE::ref $_[0] eq 'HASH')? @{$_[0]} : @_
+	);
 }
 
 =head2 create_date

@@ -7,6 +7,8 @@ use Try::Tiny;
 require Scalar::Util;
 require Symbol;
 
+our $VERSION= '1.0000';
+
 =head1 NAME
 
 DataStore::CAS - Abstract base class for Content Addressable Storage
@@ -544,6 +546,8 @@ package DataStore::CAS::File;
 use strict;
 use warnings;
 
+our $VERSION= '0.0100';
+
 sub store { $_[0]{store} }
 sub hash  { $_[0]{hash} }
 sub size  { $_[0]{size} }
@@ -577,6 +581,8 @@ sub AUTOLOAD {
 package DataStore::CAS::VirtualHandle;
 use strict;
 use warnings;
+
+our $VERSION= '0.0100';
 
 =head1 HANDLE OBJECTS
 

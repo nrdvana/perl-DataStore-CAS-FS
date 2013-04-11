@@ -69,13 +69,14 @@ is_deeply( $dir->metadata, \%metadata, 'deserialized metadata are correct' )
 is_deeply( [ map { $_->as_hash } @{$dir->{_entries}} ], \@expected, 'deserialized entries are correct' )
 	or diag Dumper($dir->{_entries});
 
-my $iter= $dir->iterator;
-for (@expected) {
-	ok( !$iter->eof, 'not eof yet' );
-	is( $iter->next->name, $_->{name}, 'iterator matches' );
-}
-ok( $iter->eof, 'eof at end' );
-is( $iter->next, undef, 'and next returns undef' );
+subtest dirent_iterator => sub {
+	my $iter= $dir->iterator;
+	for (@expected) {
+		is( $iter->()->name, $_->{name}, 'iterator matches' );
+	}
+	is( $iter->(), undef, 'and next returns undef' );
+	done_testing;
+};
 
 # unicode testing ----------------------
 

@@ -8,6 +8,8 @@ use Digest;
 
 use parent 'DataStore::CAS';
 
+our $VERSION= '0.0100';
+
 our @_ctor_params= qw: entries :;
 sub _ctor_params { @_ctor_params, $_[0]->SUPER::_ctor_params; }
 
