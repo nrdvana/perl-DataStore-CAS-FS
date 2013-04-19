@@ -1,14 +1,25 @@
 package App::Casbak::Cmd;
-use strict;
-use warnings;
+use Moo;
 use Try::Tiny;
 use Carp;
 use Module::Runtime;
 
+has want_version => ( is => 'rw' );
+has want_help    => ( is => 'rw' );
+has verbosity    => ( is => 'rw', default => sub { 0 } );
+has allow_no_op  => ( is => 'rw' );
+has casbak_args  => ( is => 'rw', default => sub { +{backup_dir => '.'} } );
+sub backup_dir {
+	my $args= $_[0]->casbak_args;
+	$args->{backup_dir}= $_[1] if @_ > 1;
+	$args->{backup_dir}
+}
+1;
+__END__
 # Load a package for a casbak command (like 'ls', 'init', etc)
 # Returns package name on success, false on nonexistent, and throws
 # an exception if the package exists but fails to load.
-sub LoadSubcommand {
+sub load_subcommand {
 	my ($class, $cmdName)= @_;
 	
 	# Convert underscore and hyphen to CamelCase
@@ -28,7 +39,7 @@ sub LoadSubcommand {
 	
 	if (defined $err) {
 		# Try to distinguish between module errors and nonexistent modules.
-		my $commands= $class->FindAllCommands();
+		my $commands= $class->find_all_subcommands();
 		return ''
 			unless grep { $_ eq $pkg } @$commands;
 		# looks like a bug in the package.
@@ -36,15 +47,15 @@ sub LoadSubcommand {
 	}
 
 	# Make sure the package implemented the required methods
-	for my $mth (qw: ShortDescription applyArguments run getHelpPOD :) {
+	for my $mth (qw: short_description apply_args run get_pod :) {
 		die "Missing required method '$mth' in $pkg\n"
 			if !$pkg->can($mth) or $pkg->can($mth) eq __PACKAGE__->can($mth);
 	}
 	return $pkg;
 }
 
-sub FindAllCommands {
-	my ($class)= @_;
+sub find_all_subcommands {
+	my $class= shift;
 	my %pkgSet= ();
 	# Search all include paths for packages named "App::Casbak::Cmd::*"
 	for (@INC) {
@@ -57,51 +68,30 @@ sub FindAllCommands {
 	[ keys %pkgSet ]
 }
 
-sub wantVersion  { $_[0]{wantVersion} }
-sub wantHelp     { $_[0]{wantHelp} }
-sub verbosity    { $_[0]{verbosity} }
-sub allowNoop    { $_[0]{allowNoop} }
-sub casbakConfig { $_[0]{casbakConfig} }
-sub backupDir    { $_[0]{casbakConfig}{backupDir} }
-
-sub new {
-	my $class= shift;
-	my %p= @_ == 1? %{$_[0]} : @_;
-	$class->_ctor(\%p);
-}
-
-sub _ctor {
-	my ($class, $params)= @_;
-	$params->{verbosity}   ||= 0;
-	$params->{casbakConfig}||= {};
-	$params->{casbakConfig}{backupDir} ||= '.';
-	bless $params, $class;
-}
-
-sub applyArguments {
+sub apply_args {
 	my ($self, @args)= @_;
 	
 	# Iterate through options til the first non-option, which must be a sub-command name
 	# (unless --help or --version was requested)
 	require Getopt::Long;
 	Getopt::Long::Configure(qw: no_ignore_case bundling require_order :);
-	Getopt::Long::GetOptionsFromArray(\@args, $self->_baseGetoptConfig )
+	Getopt::Long::GetOptionsFromArray(\@args, $self->_base_getopt_config )
 		or die "\n";
 
 	# Now, figure out which subcommand to become
 	if (@args) {
 		my $cmd= shift @args;
-		my $cmdClass= $self->LoadSubcommand($cmd)
+		my $cmdClass= $self->load_subcommand($cmd)
 			or die "No such command \"$cmd\"\n";
 		
-		$self= $cmdClass->_ctor($self);
-		$self->can('applyArguments') eq \&applyArguments
-			and die "Package '$cmdClass' did not implement 'applyArguments'";
-		$self->applyArguments(@args);
+		$self= $cmdClass->new(%$self);
+		$self->can('apply_args') eq \&apply_args
+			and die "Package '$cmdClass' did not implement 'apply_args'\n";
+		$self->apply_args(@args);
 	}
 	else {
 		die "No command specified\n"
-			unless $self->wantVersion or $self->wantHelp or $self->allowNoop;
+			unless $self->want_version or $self->want_help or $self->allow_no_op;
 	}
 }
 
@@ -109,27 +99,27 @@ sub run {
 	croak "Subcommand required";
 }
 
-sub _baseGetoptConfig {
+sub _base_getopt_config {
 	my $self= shift;
 	return
-		'version|V'      => \$self->{wantVersion},
-		'help|?'         => \$self->{wantHelp},
-		'allow-noop'     => \$self->{allowNoop},
-		'verbose|v'      => sub { ++$self->{verbosity} },
-		'quiet|q'        => sub { --$self->{verbosity} },
-		'casbak-dir|D=s' => \$self->{backupDir},
+		'version|V'      => sub { $self->want_version(1) },
+		'help|?'         => sub { $self->want_help(1) },
+		'allow-noop'     => sub { $self->allow_no_op(1) },
+		'verbose|v'      => sub { $self->verbosity($self->verbosity+1) },
+		'quiet|q'        => sub { $self->verbosity($self->verbosity-1) },
+		'casbak-dir|D=s' => sub { $self->backup_dir($_[1]) },
 	;
 }
 
-sub ShortDescription {
+sub short_description {
 	"(unimplemented)"
 }
 
-sub getHelpPOD {
+sub get_pod {
 	my $self= shift;
 	
 	# First, use dynamic module loading to find all the command classes
-	my $commands= $self->FindAllCommands();
+	my $commands= $self->find_all_commands();
 
 	# Try loading them all, but handle errors gracefully
 	foreach my $pkg (@$commands) {
@@ -147,7 +137,7 @@ sub getHelpPOD {
 		$commandsPod .=
 			"=item ".lc($cmd)."\n"
 			."\n"
-			.(try { $pkg->ShortDescription } catch { "(error loading module $pkg)" })."\n"
+			.(try { $pkg->short_description } catch { "(error loading module $pkg)" })."\n"
 			."\n"
 	}
 	

@@ -1,39 +1,59 @@
 package App::Casbak::Cmd::Init;
-use strict;
-use warnings;
+use Moo;
+extends 'App::Casbak::Cmd';
 use Try::Tiny;
+use Module::Runtime 'require_module', 'is_module_name';
 
-use parent 'App::Casbak::Cmd';
+has user_config => ( is => 'rw', default => sub {+{}} );
 
-sub ShortDescription {
+sub short_description {
 	"Initialize a new backup directory"
-}
-
-sub _ctor {
-	my ($class, $params)= @_;
-
-	$params->{casbakConfig} ||= {};
-	$params->{casbakConfig}{cas} ||= {};
-	$params->{casbakConfig}{cas}{store} ||= { CLASS => 'File::CAS::Store::Simple' };
-
-	$class->SUPER::_ctor($params);
 }
 
 sub run {
 	my $self= shift;
-	App::Casbak->init($self->casbakConfig);
+	my $cfg= ($self->casbak_args->{config} ||= {});
+
+	$cfg->{cas}= $self->_build_module_args($self->user_config->{cas}, 'DataStore::CAS::Simple');
+	$cfg->{cas}[2] ||= {};
+	my %validParams= map { $_ => 1 } $cfg->{cas}[0]->_ctor_params;
+
+	# If the CAS class supports 'path', we supply $backup_dir/store as the default.
+	$cfg->{cas}[2]{path}= 'store'
+		if (!defined $cfg->{cas}[2]{path} and $validParams{path});
+
+	$cfg->{scanner}= $self->_build_module_args($self->user_config->{scanner}, 'DataStore::CAS::FS::Scanner');
+	
+	$cfg->{extractor}= $self->_build_module_args($self->user_config->{extractor}, 'DataStore::CAS::FS::Extractor');
+
+	$cfg->{date_parser}= $self->_build_module_args($self->user_config->{extractor}, 'DateTime::Format::Natural');
+
+	App::Casbak->init($self->casbak_args);
 }
 
-sub applyArguments {
+sub _build_module_args {
+	my ($self, $cfg, $default_class)= @_;
+	my $class= delete $cfg->{CLASS} || $default_class;
+	require_module($class) or die "Package $class is not available\n";
+	my $version;
+	if (defined $cfg->{VERSION}) {
+		$class->VERSION( $version= delete $cfg->{VERSION} );
+	} else {
+		$version= $class->VERSION;
+	}
+	return [ $class, $version, (keys %$cfg? $cfg : ()) ];
+}
+
+sub apply_args {
 	my ($self, @args)= @_;
 	
 	require Getopt::Long;
 	Getopt::Long::Configure(qw: no_ignore_case bundling permute :);
 	Getopt::Long::GetOptionsFromArray(\@args,
-		$self->_baseGetoptConfig,
-		'store|s=s'     => sub { $self->parseStore($_[1]) },
-		'dirtype|d=s'   => sub { $self->parseDirtype($_[1]) },
-		'digest=s'      => sub { $self->parseDigest($_[1]) },
+		$self->_base_getopt_config,
+		'storage-engine|s=s' => sub { $self->apply_cas($_[1]) },
+		'dir-type|d=s'       => sub { $self->apply_dirtype($_[1]) },
+		'digest=s'           => sub { $self->apply_digest($_[1]) },
 		) or die "\n";
 
 	for my $arg (@args) {
@@ -43,15 +63,15 @@ sub applyArguments {
 		$self->apply($1, $2);
 	}
 
-	defined $self->casbakConfig->{cas}{store} and length $self->casbakConfig->{cas}{store}
-		or die "Parameter 'cas.store' is required\n";
+	defined $self->casbakConfig->{cas}{CLASS} and length $self->casbakConfig->{cas}{CLASS}
+		or die "Storage engine (-s, or cas.CLASS) is required\n";
 }
 
 sub apply {
 	my ($self, $path, $value)= @_;
 	$path= [ split /\./, $path ] unless ref $path;
 	
-	my $node= $self->casbakConfig;
+	my $node= $self->user_config;
 	for (my $i= 0; $i < $#$path; $i++) {
 		my $field= $path->[$i];
 		$node->{$field} ||= {};
@@ -66,42 +86,42 @@ sub apply {
 	$node->{$path->[-1]}= $value;
 }
 
-sub parseStore {
+our %_store_aliases= (
+	simple => 'DataStore::CAS::Simple',
+);
+sub apply_cas {
 	my ($self, $spec)= @_;
-	my %opts= (
-		simple => 'File::CAS::Store::Simple',
-	);
 	
-	my $pick= $opts{lc $spec}
-		or die "Invalid store spec '$spec'\n";
-	
-	$self->apply('cas.store.CLASS' => $pick);
+	my $class= $_store_aliases{lc $spec}
+		|| is_module_name($spec)? $spec : die "Invalid store spec '$spec'\n";
+
+	$self->apply('cas.store.CLASS' => $class);
 }
 
-sub parseDirtype {
+our %_dir_aliases= (
+	universal => 'DataStore::CAS::FS:Dir',
+	minimal   => 'DataStore::CAS::FS:Dir::Minimal',
+	unix      => 'DataStore::CAS::FS:Dir::Unix',
+);	
+sub apply_dirtype {
 	my ($self, $spec)= @_;
-	my %opts= (
-		universal => 'File::CAS::Dir',
-		minimal   => 'File::CAS::Dir::Minimal',
-		unix      => 'File::CAS::Dir::Unix',
-	);
+
+	my $class= $_dir_aliases{lc $spec}
+		|| is_module_name($spec)? $spec : die "Invalid dirtype argument '$spec'\n";
 	
-	my $pick= $opts{lc $spec}
-		or die "Invalid dirtype spec '$spec'\n";
-	
-	$self->apply('cas.scanner.dirClass' => $pick);
+	$self->apply('cas.scanner.dir_class' => $class);
 }
 
-sub parseDigest {
+sub apply_digest {
 	my ($self, $digest)= @_;
-	$self->apply('cas.store.digest' => $digest);
+	$self->apply('cas.digest' => $digest);
 }
 
-sub getHelpPOD {
+sub help_pod {
 	open(my $f, '<', __FILE__)
 		or die "Unable to read script (".__FILE__.") to extract help text: $!\n";
 	local $/= undef;
-	<$f>;
+	return scalar <$f>;
 }
 
 1;
