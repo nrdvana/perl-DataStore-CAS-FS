@@ -9,13 +9,13 @@ has want_help    => ( is => 'rw' );
 has verbosity    => ( is => 'rw', default => sub { 0 } );
 has allow_no_op  => ( is => 'rw' );
 has casbak_args  => ( is => 'rw', default => sub { +{backup_dir => '.'} } );
+
 sub backup_dir {
 	my $args= $_[0]->casbak_args;
 	$args->{backup_dir}= $_[1] if @_ > 1;
 	$args->{backup_dir}
 }
-1;
-__END__
+
 # Load a package for a casbak command (like 'ls', 'init', etc)
 # Returns package name on success, false on nonexistent, and throws
 # an exception if the package exists but fails to load.

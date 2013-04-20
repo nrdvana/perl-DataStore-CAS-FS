@@ -184,13 +184,25 @@ sub snapshot_index_filename {
 
 =head2 write_log_entry( $type, $message, $data )
 
+This writes one line of text to the log.  $type is a single string that helps
+identify what sort of action was performed.  If $message is multi-line, it
+will be collapsed to a single line.  $message also may not contain "{", as
+this signifies the start of the $data, which is encoded as JSON.
+
+The purpose of the log is to give the user a script-friendly transaction log
+of everything that happened to the backup, in case they would like to b able
+to track down lost revisions, or do forensics on a broken backup.  To this end,
+App::Casbak tries to only write log entries for changes or significant events.
+
 =cut
 
 sub write_log_entry {
 	my ($self, $type, $message, $data)= @_;
 	my ($sec,$min,$hour,$mday,$mon,$year)= gmtime(time);
-	$message =~ tr/{}/()/; # message should never contain curly braces
-	my $line= sprintf("%4d-%2d-%2dT%2d:%2d:%2dZ %s %s %s\n", $year, $mon, $mday, $hour, $min, $sec, $type, $message, JSON::json_encode($data));
+	# message should never contain curly braces or newline.
+	$message =~ tr/{}\n\r/()| /;
+	my $line= sprintf("%4d-%2d-%2dT%2d:%2d:%2dZ %s %s %s\n",
+		$year, $mon, $mday, $hour, $min, $sec, $type, $message, JSON::json_encode($data));
 	open (my $fh, '>>', $self->log_filename) or die "open(log): $!";
 	(print $fh $line) or die "write(log): $!";
 	close $fh or die "close(log): $!";
@@ -278,6 +290,18 @@ sub canonical_date {
 	return $date->ymd.'T'.$date->hms.'Z';
 }
 
+=head2 get_snapshot( $target_date )
+
+Get the snapshot that was in effect on $target_date.  In other words, the
+nearest snapshot that is older than or equal to $target_date.
+
+Returns a Snapshot object, or undef If no snapshot existed at that time,
+or if no snapshot has ever been recorded.
+
+Throws an exception if it fails to load the snapshot entry from the CAS.
+
+=cut
+
 sub get_snapshot {
 	my ($self, $target_date)= @_;
 	my $array= $self->snapshot_index;
@@ -306,7 +330,17 @@ sub get_snapshot {
 	try {
 		my $file= $self->cas->get($digest_hash);
 		my $dir= DataStore::CAS::FS::Dir->new($file);
-		$snap= App::Casbak::Snapshot->new($dir);
+		my $iter= $dir->iterator;
+		my ($root_ent, $bogus)= ( $iter->(), $iter->() );
+		defined $root_ent or die "no root entry\n";
+		!defined $bogus or die "multiple root entries\n";
+		defined $dir->metadata or die "metadata is missing\n";
+		defined $dir->metadata->{timestamp} or die "metadata lacks a timestamp\n";
+		$snap= App::Casbak::Snapshot->new(
+			cas        => $self->cas,
+			root_entry => $root_ent,
+			metadata   => $dir->metadata,
+		);
 	}
 	catch {
 		chomp($err= $_);
@@ -315,12 +349,42 @@ sub get_snapshot {
 	die "Unable to load snapshot from $digest_hash: $err\n";
 }
 
+=head2 get_snapshot_or_die( $target_date )
+
+Like get_snapshot, except that it also throws exceptions when no backup
+existed on the target date, instead of returning undef.
+
+=cut
+
 sub get_snapshot_or_die {
 	my ($self, $date)= @_;
 	$self->get_snapshot($date)
 		or die defined $date? "No snapshot existed on date $date\n" : "No snapshots recorded yet\n";
 }
-	
+
+=head2 save_snapshot( $root_entry, $metadata )
+
+Write a new snapshot and append it to the snapshot index.
+
+$root_entry is a DataStore::CAS::FS::Dir object (or HASHREF equivalent)
+which you ordinarily get from an instance of DataStore::CAS::FS after making
+modifications to it.  The root is a directory entry instead of a single CAS
+digest hash, so that we can preserve the metadata (mode, owner, etc) of the
+root directory.  It can be as simple as:
+
+  { type => 'dir', name => '', ref => $digest_hash }
+
+$metadata is a free-form perl data structure, which will get encoded as JSON.
+The strings in it should be Unicode (or lower ASCII).  If you need to store
+raw octet strings, see DataStore::CAS::FS::NonUnicode.
+
+If this method completes without an exception, it means your new snapshot is
+saved into the CAS and the snapshot has been added to the index (on disk) so
+calls to get_snapshot will find it, and new instances of Casbak created on
+this backup_dir will see it as well.
+
+=cut
+
 sub save_snapshot {
 	my ($self, $root_entry, $metadata)= @_;
 	
@@ -352,6 +416,30 @@ sub save_snapshot {
 		if defined $err;
 	1;
 }
+
+=head2 init( $constrctor_args )
+
+Initialize a backup_dir, with the given arguments.
+
+The arguments should be *only* the C<backup_dir> and C<config> attributes.
+The C<backup_dir> will be checked to make sure it is empty, an instance will
+be created using the arguments, and all the other attributes will be built
+according to C<config>.  If everything seems good, this will then write out
+the Casbak config file and initialize the log and snapshot_index.
+
+If anything fails, it should die with a (hopefully) nice user-friendly error
+message.
+
+The constructor_args get munged slightly, so don't try to re-use them.
+
+If the CAS you specify supports a "create" parameter, it will be set to true
+before we construct the object.  If you really don't want the CAS to be
+created, you should explicitly set "create => 0".
+
+CAS classes which support a "path" parameter will receive a default of
+"$backup_dir/store".
+
+=cut
 
 sub init {
 	my ($class, $ctor_args)= @_;
@@ -400,98 +488,7 @@ sub init {
 	return $self;
 }
 
-#sub importTree {
-#	my ($self, %p)= @_;
-#	Trace('Casbak->importTree(): ', \%p);
-#	
-#	my ($srcPath, $dstPath, $rootEnt)= ($p{real}, $p{virt}, $p{root});
-#
-#	# The Root Dir::Entry defaults to the latest snapshot
-#	unless (defined $rootEnt) {
-#		my $snap= $self->getSnapshot();
-#		$rootEnt= $snap->rootEntry
-#			if defined $snap;
-#	}
-#	
-#	# If we're starting from *nothing*, we fake the root Dir::Entry by
-#	#   supplying the known hash of the canonical "Empty Directory"
-#	$rootEnt= $self->cas->getEmptyDirHash()
-#		unless defined $rootEnt;
-#	
-#	# Did they give us a proper DirEnt, or just a hash?
-#	if (!ref $rootEnt) {
-#		# They gave us a hash.  Convert to Dir::Entry.
-#		$rootEnt= File::CAS::Dir::Entry->new( name => '', type => 'dir', hash => $rootEnt );
-#	}
-#	else {
-#		ref($rootEnt)->isa('File::CAS::Dir::Entry')
-#			or croak "Invalid 'root': must be File::CAS::Dir::Entry or digest string";
-#		$rootEnt->type eq 'dir'
-#			or croak "Root directory entry must describe a directory.";
-#	}
-#	
-#	# Now get an array of Dir::Entry describing the entire destination path.
-#	# Any missing directories will create generic/empty Dir::Entry objects.
-#	my $err;
-#	my $resolvedDest= $self->cas->resolvePathPartial($rootEnt, $dstPath, \$err);
-#	croak "Can't resolve destination directory: $err"
-#		if defined $err;
-#	
-#	# We always allow the final path element to be created/overwritten, but we only
-#	# allow inbetween directories to be created if the user requested that feature.
-#	if (@$resolvedDest > 1 and !defined $resolvedDest->[-2]->hash) {
-#		$p{create_deep}
-#			or croak "Destination path does not exist in backup: '$dstPath' ($err)";
-#	}
-#
-#	# Now inspect the source entry in the real filesystem
-#	my $srcEnt= $self->cas->scanner->scanDirEnt($srcPath)
-#		or croak "Cannot stat '$srcPath'";
-#	# It is probably a dir, but we also allow importing single files.
-#	if ($srcEnt->{type} eq 'dir') {
-#		my $hintDir;
-#		if (defined $resolvedDest->[-1]) {
-#			croak "Attempt to overwrite file with directory"
-#				if (defined $resolvedDest->[-1]->type and $resolvedDest->[-1]->type ne 'dir');
-#			$hintDir= $self->cas->getDir($resolvedDest->[-1]->hash)
-#				if (defined $resolvedDest->[-1]->hash);
-#		}
-#		my $hash= $self->cas->putDir($srcPath, $hintDir);
-#		
-#		# When building the new dir entry, keep all source attrs except name,
-#		#   but use destination entry attrs as defaults for attrs not set in $srcEnt
-#		# Example:
-#		#  $srcEnt = { name => 'foo', create_ts => 12345 };
-#		#  $dstEnt = { name => 'bar', create_ts => 11111, unix_uid => 1002 };
-#		#  $result = { name => 'bar', create_ts => 12345, unix_uid => 1002 };
-#		my %attrs= %{$srcEnt->asHash};
-#		delete $attrs{name};
-#		%attrs= ( %{$resolvedDest->[-1]->asHash}, %attrs );
-#		$resolvedDest->[-1]= File::CAS::Dir::Entry->new(%attrs);
-#	}
-#	else {
-#		# We do not allow the root entry to be anything other than a directory.
-#		(@$resolvedDest > 1)
-#			or croak "Cannot store non-directory (type = ".$srcEnt->type.") as virtual root: '$srcPath'\n";
-#		my $hash= $self->cas->putFile($srcPath);
-#		$resolvedDest->[-1]= File::CAS::Dir::Entry->new( %{$srcEnt->asHash}, hash => $hash );
-#	}
-#	
-#	# The final Dir::Entry in the list $resolvedDest has been modified.
-#	# If it was not the root, then we need to walk up the tree modifying each directory.
-#	while (@$resolvedDest > 1) {
-#		my $newEnt= pop @$resolvedDest;
-#		my $dirEnt= $resolvedDest->[-1];
-#		my $dir= $self->cas->getDir($dirEnt->hash);
-#		$dir= $self->cas->mergeDir($dir, [ $newEnt ] );
-#		my $hash= $self->cas->putDir($dir);
-#		$resolvedDest->[-1]= File::CAS::Dir::Entry->new( %{$dirEnt->asHash}, hash => $hash );
-#	}
-#	
-#	# Return the new root Dir::Entry (caller will likely save this as a snapshot)
-#	return $resolvedDest->[0];
-#}
-
+# lazy-build 'config' attribute by loading it from the config file in 'backup_dir'.
 sub _build_config {
 	my $self= shift;
 	my $cfg_file= $self->config_filename;
@@ -519,6 +516,8 @@ sub _build_config {
 	return $cfg;
 }
 
+# get a list of constructor args for some unknown class by inspecting config->$field_name
+# returns a list of ($class, @args), where @args is usually just a single hashref.
 sub _get_module_constructor_args {
 	my ($self, $field_name, $thing_name, $required_ancestor, $required_method)= @_;
 	my $args= $self->config->{$field_name};
@@ -544,6 +543,7 @@ sub _get_module_constructor_args {
 	return ( $class, @{JSON::json_decode(JSON::json_encode(\@args))} );
 }
 
+# lazy-build cas from config->{cas}
 sub _build_cas {
 	my $self= shift;
 	my ($class, @args)= $self->_get_module_constructor_args('cas', 'CAS', 'DataStore::CAS', undef);
@@ -558,25 +558,31 @@ sub _build_cas {
 	$class->new(@args);
 }
 
+# lazy-build scanner from config->{scanner}
 sub _build_scanner {
 	my $self= shift;
 	my ($class, @args)= $self->_get_module_constructor_args('scanner', 'Scanner', 'DataStore::CAS::FS::Scanner', undef);
 	$class->new(@args);
 }
 
+# lazy-build extractor from config->{extractor}
 sub _build_extractor {
 	my $self= shift;
 	my ($class, @args)= $self->_get_module_constructor_args('extractor', 'Extractor', 'DataStore::CAS::FS::Extractor', undef);
 	$class->new(@args);
 }
 
+# lazy-build snapshot_index from the snapshot index file in backup_dir
 sub _build_snapshot_index {
 	$_[0]->_read_snapshot_index($_[0]->snapshot_index_filename);
 }
+
+# save the current value of snapshot_index back to the index file
 sub _save_snapshot_index {
 	$_[0]->_write_snapshot_index($_[0]->snapshot_index_filename);
 }
 
+# lazy-build date_format from config->{date_format}
 sub _build_date_format {
 	my $self= shift;
 	my ($class, @args)= $self->_get_module_constructor_args('date_format', 'Date Format', undef, 'parse_datetime');
@@ -593,6 +599,7 @@ sub _slurp_or_die {
 		or die "read($filename): $!\n";
 	$data;
 }
+
 sub _overwrite_or_die {
 	my ($class, $filename, $data)= @_;
 	my $f;

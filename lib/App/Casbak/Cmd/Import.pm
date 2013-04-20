@@ -1,42 +1,33 @@
 package App::Casbak::Cmd::Import;
-use strict;
-use warnings;
+use Moo;
+extends 'App::Casbak::Cmd';
 use Try::Tiny;
 
-use parent 'App::Casbak::Cmd';
-
-sub ShortDescription {
+sub short_description {
 	"Import files from filesystem to virtual path in backup"
 }
 
 # Array of source=>dest pairs to process
-sub paths { $_[0]{paths} }
+has paths => ( is => 'rw', default => sub { [] } );
 sub path_list { @{$_[0]->paths} }
 
 # Flag for whether to only use filesystem metadata (size, mtime) instead of re-hashing all the files
-sub compareMetaOnly { $_[0]{compareMetaOnly} }
+has compare_meta_only => ( is => 'rw' );
 
 # Set of arbitrary metadata to attach to snapshot
-sub snapshotMeta { $_[0]{snapshotMeta} }
+has snapshot_meta     => ( is => 'rw', default => sub { {} } );
 
-sub _ctor {
-	my ($class, $params)= @_;
-	$params->{paths} ||= [];
-	$params->{snapshotMeta} ||= {};
-	$class->SUPER::_ctor($params);
-}
-
-sub applyArguments {
+sub apply_args {
 	my ($self, @args)= @_;
 	
 	require Getopt::Long;
 	Getopt::Long::Configure(qw: no_ignore_case bundling permute :);
 	Getopt::Long::GetOptionsFromArray(\@args,
-		$self->_baseGetoptConfig,
-		'quick'       => \$self->{compareMetaOnly},
+		$self->_base_getopt_config,
+		'quick'       => sub { $self->compare_meta_only(1) },
 		'<>'          => sub { $self->add_path("$_[1]") },
 		'as=s'        => sub { $self->set_virtual_path("$_[1]") },
-		'comment|m=s' => \$self->snapshotMeta->{comment},
+		'comment|m=s' => sub { $self->snapshot_meta->{comment}= $_[1] },
 		) or die "\n";
 }
 
@@ -57,27 +48,43 @@ sub run {
 	
 	unless (scalar $self->path_list) {
 		my $msg= "No paths specified.  Nothing to do\n";
-		$self->allowNoop or die $msg;
+		$self->allow_no_op or die $msg;
 		warn $msg;
 		return 1;
 	}
 	
 	# Create instance of Casbak
-	my $casbak= App::Casbak->new($self->casbakConfig);
+	my $casbak= App::Casbak->new($self->casbak_args);
 	
 	# Start from current snapshot.
-	# (It could also be undef, which is OK)
-	my $snap= $casbak->getSnapshot();
-	my $root= $snap? $snap->rootEntry : undef;
+	# (It could be undef, which means we're starting from scratch)
+	my $snap= $casbak->get_snapshot();
+	my $fs= DataStore::CAS::FS->new(
+		store => $casbak->cas,
+		root_entry => $snap? $snap->root_entry : {}
+	);
 
-	for my $pathSpec ($self->path_list) {
-		$root= $casbak->importTree(root => $root, %$pathSpec, compareMetaOnly => $self->compareMetaOnly);
+	for my $path_spec ($self->path_list) {
+		my $hint;
+		if ($self->compare_meta_only) {
+			my $hint_path= $fs->resolve_path($path_spec->{virt}, { no_die => 1 });
+			if (defined $hint_path && @$hint_path > 0 && $hint_path->[-1]->type eq 'dir') {
+				my $digest_hash= $hint_path->[-1]->ref;
+				$hint= $fs->get_dir($digest_hash)
+					if defined $digest_hash and length $digest_hash;
+			}
+		}
+		my $digest_hash= $casbak->scanner->store_dir($casbak->cas, $path_spec->{real}, $hint);
+		my $new_ent= $casbak->scanner->scan_dir_ent($path_spec->{real});
+		$new_ent->{ref}= $digest_hash;
+		$fs->set_path($path_spec->{virt}, $new_ent, { force_create => 1 });
 	}
 	
 	# TODO: Fill in interesting metadata about this backup (duration, num files, size increase, etc)
 	
 	# Save this new root as a snapshot
-	$casbak->saveSnapshot([$root], $self->snapshotMeta);
+	$fs->commit();
+	$casbak->save_snapshot($fs->root_entry, $self->snapshot_meta);
 	1;
 }
 
