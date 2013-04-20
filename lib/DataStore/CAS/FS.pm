@@ -536,7 +536,7 @@ sub _resolve_path {
 	\@nodes;
 }
 
-=head2 apply_path( $path, $Dir_Entry, $flags )
+=head2 set_path( $path, $Dir_Entry, $flags )
 
 Temporarily override a directory entry at $path.  If $Dir_Entry is false, this
 will cause $path to be unlinked.  If the name of Dir_Entry differs from the
@@ -579,16 +579,29 @@ sub set_path {
 	# replace the final entry, after applying defaults
 	if (!$newent) {
 		$newent= 0; # 0 means unlink
-	}
-	elsif (!defined $newent->name or !defined $newent->type) {
-		$newent= $newent->clone(
-			name => $newent->name // $nodes->[-1]->name,
-			type => $newent->type // $nodes->[-1]->type // 'file',
-		);
+	} else {
+		$newent= DataStore::CAS::FS::Dir::Entry->new({ %$newent })
+			if ref $newent eq 'HASH';
+		if (!(defined $newent->name && defined $newent->type)) {
+			my $name= defined $newent->name? $newent->name
+				: $nodes->[-1]->name;
+			my $type= defined $newent->type? $newent->type
+				: defined $nodes->[-1]->type? $nodes->[-1]->type
+				: 'file';
+			$newent= $newent->clone(name => $name, type => $type);
+		}
 	}
 	$nodes->[-1]{entry}= $newent;
 	$self->_apply_overrides($nodes);
 }
+
+=head2 update_path( $path, $changes, $flags )
+
+Like set_path, but it applies a hashref (or arrayref) of $changes to the
+directory entry which exists at the named path.  Use this to update a few
+attributes of a directory entry without overwriting the entire thing.
+
+=cut
 
 sub update_path {
 	my ($self, $path, $changes, $flags)= @_;
@@ -625,15 +638,34 @@ sub _apply_overrides {
 	1;
 }
 
+=head2 mkdir( $path )
+
+Convenience method to create an empty directory at $path.
+
+=cut
+
 sub mkdir {
 	my ($self, $path)= @_;
 	$self->set_path($path, { type => 'dir', ref => $self->hash_of_empty_dir });
 }
 
+=head2 touch( $path )
+
+Convenience method to update the timestamp of the directory entry at $path,
+possibly creating it (as an empty file)
+
+=cut
+
 sub touch {
 	my ($self, $path)= @_;
 	$self->update_path($path, { mtime => time() });
 }
+
+=head2 unlink( $path )
+
+Convenience method to remove the directory entry at $path.
+
+=cut
 
 sub unlink {
 	my ($self, $path)= @_;

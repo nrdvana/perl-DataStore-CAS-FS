@@ -307,7 +307,7 @@ sub store_dir {
 	}
 	# now, we encode it!
 	my $serialized= $self->dir_class->SerializeEntries( $data->{entries}, $data->{metadata} );
-	return $cas->putScalar($serialized);
+	return $cas->put_scalar($serialized);
 }
 
 package DataStore::CAS::FS::Scanner::FastStat;
