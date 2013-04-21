@@ -61,7 +61,7 @@ sub _buildTree {
 	}
 	else { die "Can't handle $node"; }
 }
-my $rootEntry= DataStore::CAS::FS::Dir::Entry->new( name => '', _buildTree($tree, 'root') );
+my $rootEntry= DataStore::CAS::FS::DirEnt->new( name => '', _buildTree($tree, 'root') );
 
 my $sto= new_ok('DataStore::CAS::Virtual', [ entries => \%content ], 'create virtual cas');
 my $cas= new_ok('DataStore::CAS::FS', [ store => $sto, root => $rootEntry ], 'create file view of cas' );

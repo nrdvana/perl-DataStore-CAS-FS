@@ -46,7 +46,7 @@ L<DataStore::CAS::Dir::NonUnicode>, which gets written into JSON as
 
   C<{ "*NonUnicode*": $bytes_as_codepoints }>
 
-The 'ref' attribute of Dir::Entry is also encoded this way.  Any attribute
+The 'ref' attribute of DirEnt is also encoded this way.  Any attribute
 has the potential to be encoded this way depending on whether the Scanner
 (which read it from the filesystem) decided to wrap it in a NonUnicode object.
 
@@ -164,7 +164,7 @@ sub decode {
 		utf8::encode($ent->{ref})
 			if !ref $ent->{ref}  and utf8::is_utf8($ent->{ref});
 
-		push @entries, DataStore::CAS::FS::Dir::Entry->new($ent);
+		push @entries, DataStore::CAS::FS::DirEnt->new($ent);
 	};
 	return DataStore::CAS::FS::Dir->new(
 		file => $params->{file},

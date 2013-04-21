@@ -100,7 +100,7 @@ Read-only.  An instance of a class implementing 'DataStore::CAS'.
 
 =head2 root_entry
 
-A DataStore::CAS::Dir::Entry object describing the root of the tree.
+A DataStore::CAS::DirEnt object describing the root of the tree.
 Must be of type "dir".  Should have a name of "", but not required.
 You can pick an arbitrary directory for a chroot-like-effect, but beware
 of broken symlinks.
@@ -225,8 +225,8 @@ sub new {
 		if (!ref $root) {
 			$hash= $root;
 		}
-		# Is is a Dir::Entry? or a hashref intended to be one?
-		elsif (ref $root eq 'HASH' or ref($root)->isa('DataStore::CAS::FS::Dir::Entry')) {
+		# Is is a DirEnt? or a hashref intended to be one?
+		elsif (ref $root eq 'HASH' or ref($root)->isa('DataStore::CAS::FS::DirEnt')) {
 			$p{root_entry}= $root;
 		}
 		# Is it a ::File or ::Dir object?
@@ -245,7 +245,7 @@ sub new {
 
 	if (defined $p{root_entry}) {
 		if (ref $p{root_entry} eq 'HASH') {
-			$p{root_entry}= DataStore::CAS::FS::Dir::Entry->new({
+			$p{root_entry}= DataStore::CAS::FS::DirEnt->new({
 				type => 'dir',
 				name => '',
 				ref => $p{hash_of_empty_dir},
@@ -351,13 +351,13 @@ sub path {
 
 =head2 resolve_path( \@path_names [, \%flags ] )
 
-Returns an arrayref of DataStore::CAS::FS::Dir::Entry objects corresponding
+Returns an arrayref of DataStore::CAS::FS::DirEnt objects corresponding
 to the canonical absolute specified path, starting with the root_entry.
 
 First, a note on @path_names: you need to specify the volume, which for UNIX
 is the empty string ''.  While volumes might seem like an unnecessary
 concept, and I wasn't originally going to include that in my design, it helped
-in 2 major ways: it allows us to store a regular ::Dir::Entry for the root
+in 2 major ways: it allows us to store a regular ::DirEnt for the root
 directory (which is useful for things like permissions and timestamp) and
 allows us to record general metadata for the filesystem as a whole, within the
 ->metadata of the volume_dir.  As a side benefit, Windows users might
@@ -367,9 +367,9 @@ with File::Spec->splitdir.
 
 Next, a note on resolving paths: This function will follow symlinks in much
 the same way Linux does.  If the path you specify ends with a symlink, the
-result will be a Dir::Entry describing the symlink.  If the path you specify
+result will be a DirEnt describing the symlink.  If the path you specify
 ends with a symlink and a "" (equivalent of ending with a '/'), the symlink
-will be resolved to a Dir::Entry for the target file or directory. (and if
+will be resolved to a DirEnt for the target file or directory. (and if
 it doesn't exist, you get an error)
 
 Also, its worth noting that the directory objects in DataStore::CAS::FS are
@@ -402,7 +402,7 @@ You probably want to set 'nodie' as well.
 =item partial => $bool
 
 If the path doesn't exist, any missing directories will be given placeholder
-Dir::Entry objects.  You can test whether the path was resolved completely by
+DirEnt objects.  You can test whether the path was resolved completely by
 checking whether $result->[-1]->type is defined.
 
 =item mkdir => 1 || 2
@@ -518,7 +518,7 @@ sub _resolve_path {
 			# If we're supposed to create virtual entries, do so
 			if ($flags->{mkdir} or $flags->{partial}) {
 				$subnode= {
-					entry => DataStore::CAS::FS::Dir::Entry->new(
+					entry => DataStore::CAS::FS::DirEnt->new(
 						name => $name,
 						# It is a directory if there are more path components to resolve.
 						(@path? @mkdir_defaults : ())
@@ -550,7 +550,7 @@ name, it will default to the final element of $path.
 
 No fields of the old dir entry are used; if you want to preserve some of them,
 you need to do that yourself (but see the handy ->clone(%overrides) method of
-Dir::Entry)
+DirEnt)
 
 If $path refers to nonexistent directories, they will be created as with
 "mkdir -p", and receive the default metadata of C<$flags{default_dir_fields}>
@@ -591,7 +591,7 @@ sub set_path {
 			or die "No name for new dir entry";
 		$ent_hash{type}= $nodes->[-1]{entry}->type || 'file'
 			unless defined $ent_hash{type};
-		$newent= DataStore::CAS::FS::Dir::Entry->new(\%ent_hash);
+		$newent= DataStore::CAS::FS::DirEnt->new(\%ent_hash);
 	}
 	$nodes->[-1]{entry}= $newent;
 	$self->_apply_overrides($nodes);

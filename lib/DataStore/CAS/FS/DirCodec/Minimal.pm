@@ -125,7 +125,7 @@ sub decode {
 package DataStore::CAS::FS::DirCodec::Minimal::Entry;
 use strict;
 use warnings;
-use parent 'DataStore::CAS::FS::Dir::Entry';
+use parent 'DataStore::CAS::FS::DirEnt';
 
 sub type { $_CodeToType{$_[0][0]} }
 sub name { $_[0][1] }

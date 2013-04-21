@@ -26,7 +26,7 @@ sub encode {
 	my ($class, $entry_list, $metadata)= @_;
 	defined $metadata->{_}
 		and croak '$metadata{_} is reserved for the directory encoder';
-	my @entries= map { ref $_ eq 'HASH'? DataStore::CAS::FS::Dir::Entry->new($_) : $_ } @$entry_list;
+	my @entries= map { ref $_ eq 'HASH'? DataStore::CAS::FS::DirEnt->new($_) : $_ } @$entry_list;
 
 	# Often, an entire directory will have the same permissions for all entries
 	#  or vary only by file/directory type.
@@ -159,7 +159,7 @@ sub decode {
 package DataStore::CAS::FS::DirCodec::Unix::Entry;
 use strict;
 use warnings;
-use parent 'DataStore::CAS::FS::Dir::Entry';
+use parent 'DataStore::CAS::FS::DirEnt';
 
 sub _dirmeta        { $_[0][0] }
 sub type            { $_CodeToType{$_[0][1]} }

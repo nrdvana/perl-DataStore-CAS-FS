@@ -375,7 +375,7 @@ sub get_snapshot_or_die {
 
 Write a new snapshot and append it to the snapshot index.
 
-$root_entry is a DataStore::CAS::FS::Dir object (or HASHREF equivalent)
+$root_entry is a DataStore::CAS::FS::DirEnt object (or HASHREF equivalent)
 which you ordinarily get from an instance of DataStore::CAS::FS after making
 modifications to it.  The root is a directory entry instead of a single CAS
 digest hash, so that we can preserve the metadata (mode, owner, etc) of the

@@ -35,7 +35,7 @@ These are the current implementations:
 
 =item Universal
 
-DataStore::CAS::FS::DirCodec::Universal stores all metadata of each Dir::Entry
+DataStore::CAS::FS::DirCodec::Universal stores all metadata of each DirEnt
 using JSON.  If you use this codec, you are guaranteed that anything your
 CAS::FS::Scanner picked up was saved into the CAS.
 
@@ -75,10 +75,10 @@ directory, and then read it on demand as the user requests entries by name.
 (mentioned here for emphasis)
 
 All DataStore::CAS::FS::Dir objects are intended to be immutable, as are the
-Dir::Entry objects they index.  They are also cached by DataStore::CAS::FS, so
+DirEnt objects they index.  They are also cached by DataStore::CAS::FS, so
 modifying them could cause problems.  Don't do that.
 
-If you want to make changes to a Dir::Entry, call "$entry->clone( %overrides )"
+If you want to make changes to a DirEnt, call "$entry->clone( %overrides )"
 
 =head1 METHODS
 
@@ -174,7 +174,7 @@ sub decode {
 =head2 $self->encode( \@entries, \%metadata )
 
 Encode an array of directory entries, and attach the optional metadata to the
-encoded directory.  Each item of @entries may be either a ::Dir::Entry object
+encoded directory.  Each item of @entries may be either a ::DirEnt object
 or a hashref of fields.
 
 Codecs should assert that each item has a 'type' and 'name' attribute.

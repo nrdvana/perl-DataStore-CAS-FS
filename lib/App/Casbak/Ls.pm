@@ -59,22 +59,22 @@ sub printDirListing {
 	}
 	else {
 		$path= '/';
-		$dirEnt= File::CAS::Dir::Entry->new(name => '/', type => 'dir', hash => $params->{root}->hash, size => $params->{root}->size);
+		$dirEnt= File::CAS::DirEnt->new(name => '/', type => 'dir', hash => $params->{root}->hash, size => $params->{root}->size);
 		$dir= $params->{root};
 	}
 	
 	if ($dir and !$params->{directory}) {
 		# list directory contents
 		print "$path:\n";
-		print $self->formatDirEntry($_, $params)."\n" for $dir->getEntries;
+		print $self->formatDirEnt($_, $params)."\n" for $dir->getEntries;
 	}
 	else {
 		# list single entry
-		print $self->formatDirEntry($dirEnt, $params)."\n";
+		print $self->formatDirEnt($dirEnt, $params)."\n";
 	}
 }
 
-sub formatDirEntry {
+sub formatDirEnt {
 	my ($self, $dirEnt, $params)= @_;
 	return $dirEnt->name
 	#	if $params->{long};
