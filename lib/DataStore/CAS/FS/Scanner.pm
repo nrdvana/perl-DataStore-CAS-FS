@@ -62,7 +62,7 @@ results.
 
 =cut
 
-sub dir_class       { $_[0]{dir_class}= $_[1] if (scalar(@_)>1); $_[0]{dir_class} || 'File::CAS::Dir' }
+sub dir_class       { $_[0]{dir_class}= $_[1] if (scalar(@_)>1); $_[0]{dir_class} || 'DataStore::CAS::FS::Dir' }
 
 our %_flag_defaults;
 BEGIN {
