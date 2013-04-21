@@ -131,7 +131,7 @@ call $class->_ctor_params(), which returns a list of valid keys.
 
 our @_ctor_params= qw: path copy_buffer_size create ignore_version :;
 our @_create_params= qw: digest fanout _notest :;
-sub _ctor_params { ($_[0]->_ctor_params, @_ctor_params, @_create_params); }
+sub _ctor_params { ($_[0]->SUPER::_ctor_params, @_ctor_params, @_create_params); }
 sub _ctor {
 	my ($class, $params)= @_;
 	my %p= map { $_ => delete $params->{$_} } @_ctor_params;
@@ -148,9 +148,13 @@ sub _ctor {
 	# Path is required, and must be a directory
 	croak "Parameter 'path' is required"
 		unless defined $p{path};
-	croak "Path '$p{path}' is not a directory"
-		unless -d $p{path};
-	
+	if (!-d $p{path}) {
+		croak "Path '$p{path}' is not a directory"
+			unless $create;
+		mkdir $p{path}
+			or die "Can't create directory '$p{path}'";
+	}	
+
 	# Check directory
 	unless (-f catfile($p{path}, 'conf', 'VERSION')) {
 		croak "Path does not appear to be a valid CAS : '$p{path}'"
