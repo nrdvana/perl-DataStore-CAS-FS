@@ -457,29 +457,24 @@ No flags are yet implemented, though $flags{stats} will be supported.
 
 =cut
 
-sub delete { ... }
+sub delete { my ($digest_hash, $flags)= @_; ... }
 
 =head2 iterator([ \%flags ])
 
-Iterate the contents of the CAS.  Returns a java-style iterator with two
-methods: 'next' and 'eof'.  
-('eof' seemed more appropriate to Perl than 'hasNext')
-Each call to 'next' returns a digest hash string, which you can use to
-'get' a file object.
+Iterate the contents of the CAS.  Returns a perl-style coderef iterator which
+returns the next digest_hash string each time you call it.  Returns undef at
+end of the list.
 
 Flags:
 
-The only flag defined so far is 'prefix'.  You can use this to imitate
-Git's feature of identifying an object by a portion of its hash instead
-of having to paste the whole thing.  You will probably need more digits
-though, because you're searching the whole CAS, and not just commit
-entries.
+The only flag defined so far is 'prefix'.  You can use this to imitate Git's
+feature of identifying an object by a portion of its hash instead of having
+to type the whole thing.  You will probably need more digits though, because
+you're searching the whole CAS, and not just commit entries.
 
 =cut
 
-sub iterator {
-	die "TODO: Implement me"
-}
+sub iterator { my ($flags)= @_; ... }
 
 =head2 open_file( $file [, \%flags ])
 
@@ -491,7 +486,7 @@ Flags:
 
 =over 10
 
-=item layer
+=item layer (NOT IMPLEMENTED YET!)
 
 Specify a perl I/O layer, like 'raw' or 'utf8'.  This is equivalent to calling
 'binmode' with that argument on the filehandle.  Note that returned handles
