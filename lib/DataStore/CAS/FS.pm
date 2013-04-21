@@ -4,14 +4,18 @@ use strict;
 use warnings;
 use Carp;
 use Try::Tiny;
-use DataStore::CAS;
-use DataStore::CAS::FS::Dir;
-require File::Spec;
 
 our $VERSION= '0.0100';
 sub VersionParts {
 	return (int($VERSION), (int($VERSION*100)%100), (int($VERSION*10000)%100));
 }
+
+require DataStore::CAS;
+require DataStore::CAS::FS::Dir;
+require DataStore::CAS::FS::DirCodec::Universal;
+require DataStore::CAS::FS::DirCodec::Minimal;
+require DataStore::CAS::FS::DirCodec::Unix;
+require File::Spec;
 
 =head1 NAME
 

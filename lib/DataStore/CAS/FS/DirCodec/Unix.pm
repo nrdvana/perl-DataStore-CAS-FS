@@ -1,4 +1,4 @@
-package DataStore::CAS::FS::Dir::Unix;
+package DataStore::CAS::FS::DirCodec::Unix;
 use 5.008;
 use strict;
 use warnings;
@@ -7,23 +7,22 @@ use Carp;
 use JSON;
 use DataStore::CAS::FS::NonUnicode;
 
-use parent 'DataStore::CAS::FS::Dir';
+use parent 'DataStore::CAS::FS::DirCodec';
 
 our $VERSION= 1.0000;
 
-__PACKAGE__->RegisterFormat('Unix', __PACKAGE__);
+__PACKAGE__->register_format(unix => __PACKAGE__);
 
 =head1 METHODS
 
-=head2 $class->SerializeEntries( \@entries, \%metadata )
-
+=head2 $class->encode( \@entries, \%metadata )
 
 =cut
 
 our %_TypeToCode= ( file => 'f', dir => 'd', symlink => 'l', chardev => 'c', blockdev => 'b', pipe => 'p', socket => 's' );
 our %_CodeToType= map { $_TypeToCode{$_} => $_ } keys %_TypeToCode;
 our @fieldOrder= qw( code name value size unix_uid unix_gid unix_mode unix_atime unix_mtime unix_ctime unix_dev unix_inode unix_nlink unix_blocksize unix_blockcount );
-sub SerializeEntries {
+sub encode {
 	my ($class, $entry_list, $metadata)= @_;
 	defined $metadata->{_}
 		and croak '$metadata{_} is reserved for the directory encoder';
@@ -103,8 +102,8 @@ sub SerializeEntries {
 	$ret;
 }
 
-sub _deserialize {
-	my ($self, $params)= @_;
+sub decode {
+	my ($class, $params)= @_;
 	my $handle= $params->{handle};
 	if (!$handle) {
 		if (defined $params->{bytes}) {
@@ -112,24 +111,22 @@ sub _deserialize {
 				or croak "can't open handle to scalar";
 		}
 		else {
-			$handle= $self->file->open;
+			$handle= $params->{file}->open;
 		}
 	}
 
-	my $header_len= $self->_calc_header_length($self->format);
+	my $header_len= $class->_calc_header_length($params->{format});
 	seek($handle, $header_len, 0) or croak "seek: $!";
 
 	my (@entries, $buf, $pos);
 
 	# first, pull out the metadata, which includes the UID map, the GID map, and the default attributes.
-	$self->_readall($handle, $buf, 4);
+	$class->_readall($handle, $buf, 4);
 	my ($dirmeta_len)= unpack('N', $buf);
-	$self->_readall($handle, my $json, $dirmeta_len);
-	my $enc= JSON->new()->utf8->canonical->convert_blessed
-		->filter_json_single_key_object(
-			'*NonUnicode*' => \&DataStore::CAS::FS::NonUnicode::FROM_JSON
-		);
-	my $meta= $self->{_metadata}= $enc->decode($json);
+	$class->_readall($handle, my $json, $dirmeta_len);
+	my $enc= JSON->new()->utf8->canonical->convert_blessed;
+	DataStore::CAS::FS::NonUnicode->add_json_filter($enc);
+	my $meta= $enc->decode($json);
 
 	# Quick sanity checks
 	exists $meta->{_}{def}{uid}
@@ -138,9 +135,9 @@ sub _deserialize {
 		or croak "Incorrect directory metadata";
 
 	while (!eof $handle) {
-		$self->_readall($handle, $buf, 4);
+		$class->_readall($handle, $buf, 4);
 		my ($name_len, $ref_len, $meta_len, $code)= unpack('CCCA', $buf);
-		$self->_readall($handle, $buf, $name_len+$ref_len+$meta_len+3);
+		$class->_readall($handle, $buf, $name_len+$ref_len+$meta_len+3);
 		my @fields= ( map { length($_)? $_ : undef }
 			$meta->{_},
 			$code,
@@ -151,31 +148,15 @@ sub _deserialize {
 		push @entries, bless(\@fields, __PACKAGE__.'::Entry');
 	}
 	close $handle;
-	$self->{_entries}= \@entries;
+	return DataStore::CAS::FS::Dir->new(
+		file => $params->{file},
+		format => $params->{format},
+		entries => \@entries,
+		metadata => $meta
+	);
 }
 
-sub _entries { $_[0]{_entries} }
-
-sub iterator {
-	return DataStore::CAS::FS::Dir::EntryIter->new($_[0]->_entries);
-}
-
-sub _entry_name_map {
-	$_[0]->{_entry_name_map} ||= { map { $_->name => $_ } @{$_[0]->_entries} };
-}
-
-
-=head2 $ent= $dir->getEntry($name)
-
-Get a directory entry by name.
-
-=cut
-sub get_entry {
-	$_[0]->_entry_name_map->{$_[1]};
-}
-
-
-package DataStore::CAS::FS::Dir::Unix::Entry;
+package DataStore::CAS::FS::DirCodec::Unix::Entry;
 use strict;
 use warnings;
 use parent 'DataStore::CAS::FS::Dir::Entry';
@@ -202,7 +183,8 @@ sub unix_user       { $_[0][0]{umap}{ $_[0]->unix_uid } }
 sub unix_group      { $_[0][0]{gmap}{ $_[0]->unix_gid } }
 
 sub as_hash {
-	return { map { $_ => $_[0]->$_() } qw: type name ref size unix_uid
+	my $self= shift;
+	return { map { $_ => $self->$_() } qw: type name ref size unix_uid
 		unix_gid unix_mode unix_atime unix_mtime unix_ctime unix_dev
 		unix_inode unix_nlink unix_blocksize unix_blockcount : };
 }
