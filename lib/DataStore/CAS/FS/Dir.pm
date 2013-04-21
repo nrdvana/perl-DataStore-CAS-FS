@@ -248,6 +248,8 @@ sub SerializeEntries {
 	my @entries= sort { $a->{name} cmp $b->{name} }
 		map {
 			my %entry= %{ref $_ eq 'HASH'? $_ : $_->as_hash};
+			defined $entry{name} or croak "Can't serialize nameless directory entry: ".encode_json(\%entry);
+			defined $entry{type} or croak "Can't serialize typeless directory entry: ".encode_json(\%entry);
 			# Convert all name strings down to plain bytes, for our sort
 			# (they should be already)
 			utf8::encode($entry{name})
