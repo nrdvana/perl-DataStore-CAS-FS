@@ -26,7 +26,7 @@ sub run {
 	
 	$cfg->{extractor}= $self->_build_module_args($self->user_config->{extractor}, 'DataStore::CAS::FS::Extractor');
 
-	$cfg->{date_parser}= $self->_build_module_args($self->user_config->{extractor}, 'DateTime::Format::Natural');
+	$cfg->{date_format}= $self->_build_module_args($self->user_config->{extractor}, 'DateTime::Format::Natural');
 
 	App::Casbak->init($self->casbak_args);
 }
@@ -51,9 +51,9 @@ sub apply_args {
 	Getopt::Long::Configure(qw: no_ignore_case bundling permute :);
 	Getopt::Long::GetOptionsFromArray(\@args,
 		$self->_base_getopt_config,
-		'storage-engine|s=s' => sub { $self->apply_cas($_[1]) },
-		'dir-type|d=s'       => sub { $self->apply_dirtype($_[1]) },
-		'digest=s'           => sub { $self->apply_digest($_[1]) },
+		'storage-engine|s=s' => sub { $self->apply_cas("$_[1]") },
+		'dir-type|d=s'       => sub { $self->apply_dirtype("$_[1]") },
+		'digest=s'           => sub { $self->apply_digest("$_[1]") },
 		) or die "\n";
 
 	for my $arg (@args) {
@@ -63,7 +63,7 @@ sub apply_args {
 		$self->apply($1, $2);
 	}
 
-	defined $self->casbakConfig->{cas}{CLASS} and length $self->casbakConfig->{cas}{CLASS}
+	defined $self->user_config->{cas}{CLASS} and length $self->user_config->{cas}{CLASS}
 		or die "Storage engine (-s, or cas.CLASS) is required\n";
 }
 
@@ -117,7 +117,7 @@ sub apply_digest {
 	$self->apply('cas.digest' => $digest);
 }
 
-sub help_pod {
+sub get_pod {
 	open(my $f, '<', __FILE__)
 		or die "Unable to read script (".__FILE__.") to extract help text: $!\n";
 	local $/= undef;

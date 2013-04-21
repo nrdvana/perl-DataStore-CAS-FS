@@ -25,9 +25,9 @@ sub apply_args {
 	Getopt::Long::GetOptionsFromArray(\@args,
 		$self->_base_getopt_config,
 		'quick'       => sub { $self->compare_meta_only(1) },
-		'<>'          => sub { $self->add_path("$_[1]") },
+		'<>'          => sub { $self->add_path("$_[0]") },
 		'as=s'        => sub { $self->set_virtual_path("$_[1]") },
-		'comment|m=s' => sub { $self->snapshot_meta->{comment}= $_[1] },
+		'comment|m=s' => sub { $self->snapshot_meta->{comment}= "$_[1]" },
 		) or die "\n";
 }
 
@@ -65,6 +65,7 @@ sub run {
 	);
 
 	for my $path_spec ($self->path_list) {
+		use DDP; p($path_spec);
 		my $hint;
 		if ($self->compare_meta_only) {
 			my $hint_path= $fs->resolve_path($path_spec->{virt}, { no_die => 1 });
@@ -76,16 +77,25 @@ sub run {
 		}
 		my $digest_hash= $casbak->scanner->store_dir($casbak->cas, $path_spec->{real}, $hint);
 		my $new_ent= $casbak->scanner->scan_dir_ent($path_spec->{real});
+		delete $new_ent->{name};
 		$new_ent->{ref}= $digest_hash;
 		$fs->set_path($path_spec->{virt}, $new_ent, { force_create => 1 });
 	}
-	
+	p($fs->_path_overrides);
+
 	# TODO: Fill in interesting metadata about this backup (duration, num files, size increase, etc)
 	
 	# Save this new root as a snapshot
 	$fs->commit();
 	$casbak->save_snapshot($fs->root_entry, $self->snapshot_meta);
 	1;
+}
+
+sub get_pod {
+	open(my $f, '<', __FILE__)
+		or die "Unable to read script (".__FILE__.") to extract help text: $!\n";
+	local $/= undef;
+	return scalar <$f>;
 }
 
 1;

@@ -84,9 +84,12 @@ sub apply_args {
 		my $cmdClass= $self->load_subcommand($cmd)
 			or die "No such command \"$cmd\"\n";
 		
-		$self= $cmdClass->new(%$self);
-		$self->can('apply_args') eq \&apply_args
+		my $newself= $cmdClass->new(%$self);
+		$newself->can('apply_args') eq \&apply_args
 			and die "Package '$cmdClass' did not implement 'apply_args'\n";
+		%$self= %$newself;
+		bless $self, ref $newself;
+		bless $newself, '#Nonexistent'; # prevent destructors from running
 		$self->apply_args(@args);
 	}
 	else {
@@ -119,7 +122,7 @@ sub get_pod {
 	my $self= shift;
 	
 	# First, use dynamic module loading to find all the command classes
-	my $commands= $self->find_all_commands();
+	my $commands= $self->find_all_subcommands();
 
 	# Try loading them all, but handle errors gracefully
 	foreach my $pkg (@$commands) {

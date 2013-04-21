@@ -2,10 +2,13 @@ package App::Casbak;
 use Moo;
 use Carp;
 use Try::Tiny;
-use JSON ();
+use JSON 'encode_json', 'decode_json';
 use File::Spec;
 use DataStore::CAS::FS;
-use Module::Runtime;
+use DataStore::CAS::FS::Scanner;
+use DataStore::CAS::FS::Extractor;
+use App::Casbak::Snapshot;
+use Module::Runtime 'check_module_name', 'require_module';
 
 =head1 NAME
 
@@ -198,13 +201,14 @@ App::Casbak tries to only write log entries for changes or significant events.
 
 sub write_log_entry {
 	my ($self, $type, $message, $data)= @_;
-	my ($sec,$min,$hour,$mday,$mon,$year)= gmtime(time);
-	# message should never contain curly braces or newline.
+	# $type should be a single word
+	$type =~ /^[A-Za-z_0-9]+$/
+		or croak "Invalid log entry type: '$type'";
+	# $message should never contain curly braces or newline.
 	$message =~ tr/{}\n\r/()| /;
-	my $line= sprintf("%4d-%2d-%2dT%2d:%2d:%2dZ %s %s %s\n",
-		$year, $mon, $mday, $hour, $min, $sec, $type, $message, JSON::json_encode($data));
+	my $line= join(' ', $self->canonical_date(time), $type, $message, encode_json($data));
 	open (my $fh, '>>', $self->log_filename) or die "open(log): $!";
-	(print $fh $line) or die "write(log): $!";
+	(print $fh $line."\n") or die "write(log): $!";
 	close $fh or die "close(log): $!";
 }
 
@@ -305,30 +309,16 @@ Throws an exception if it fails to load the snapshot entry from the CAS.
 sub get_snapshot {
 	my ($self, $target_date)= @_;
 	my $array= $self->snapshot_index;
-	
 	return undef unless @$array;
 	
 	# if target_date is undef, return the latest snapshot
-	return $array->[-1] unless defined $target_date;
-	$target_date= $self->canonical_date($target_date);
+	my $item= defined $target_date?
+		$self->_find_snapshot($array, $target_date)
+		: $array->[-1];
 
-	# Use binary search to find the snapshot.
-	# Note we are comparing date strings in canonical _T_Z form (which sort alphabetically)
-	my ($min, $max, $mid)= (-1, $#$array);
-	while ($min < $max) {
-		$mid= ($min+$max+1)>>1;
-		if ($target_date ge $array->[$mid][0]) {
-			$min= $mid;
-		} else {
-			$max= $mid-1;
-		}
-	}
-	return undef if $max < 0;
-	
-	my $digest_hash= $array->[$min][1];
 	my ($err, $snap);
 	try {
-		my $file= $self->cas->get($digest_hash);
+		my $file= $self->cas->get($item->[1]);
 		my $dir= DataStore::CAS::FS::Dir->new($file);
 		my $iter= $dir->iterator;
 		my ($root_ent, $bogus)= ( $iter->(), $iter->() );
@@ -345,8 +335,27 @@ sub get_snapshot {
 	catch {
 		chomp($err= $_);
 	};
-	defined $snap && return $snap;
-	die "Unable to load snapshot from $digest_hash: $err\n";
+	die "Unable to load snapshot from $item->[1]: $err\n"
+		unless defined $snap;
+	return $snap;
+}
+
+sub _find_snapshot {
+	my ($self, $snapshot_list, $target_date)= @_;
+	$target_date= $self->canonical_date($target_date);
+	# Use binary search to find the snapshot.
+	# Note we are comparing date strings in canonical _T_Z form (which sort alphabetically)
+	my ($min, $max, $mid)= (-1, $#$snapshot_list);
+	while ($min < $max) {
+		$mid= ($min+$max+1)>>1;
+		if ($target_date ge $snapshot_list->[$mid][0]) {
+			$min= $mid;
+		} else {
+			$max= $mid-1;
+		}
+	}
+	return undef if $max < 0;
+	return $snapshot_list->[$min];
 }
 
 =head2 get_snapshot_or_die( $target_date )
@@ -392,9 +401,6 @@ sub save_snapshot {
 	$metadata->{timestamp}= time
 		unless defined $metadata->{timestamp};
 	
-	# Convert to standard date format
-	$metadata->{timestamp}= $self->canonical_date($metadata->{timestamp});
-	
 	my $array= $self->snapshot_index;
 	# Timestamps must be in cronological order
 	# (we could insert-sort here, but people should only ever be adding "new" snapshots...)
@@ -414,6 +420,7 @@ sub save_snapshot {
 	die "$err\n"
 		."The entry that would have been written is: '$metadata->{timestamp} $hash'\n"
 		if defined $err;
+	$self->write_log_entry('SNAPSHOT', "Committed snapshot $hash", { digest_hash => $hash });
 	1;
 }
 
@@ -451,7 +458,7 @@ sub init {
 	# Directory must exist and be empty
 	my @entries= grep { $_ ne '.' && $_ ne '..' } <$dir/*>;
 	-d $dir && -r $dir && -w $dir && -x $dir && 0 == @entries
-		or croak "Backups may only be initialized in an empty writeable directory\n";
+		or do { use DDP; p($ctor_args); die "Backups may only be initialized in an empty writeable directory\n" };
 
 	# Record our own version in the config
 	$ctor_args->{config}{VERSION}= $class->VERSION;
@@ -483,7 +490,7 @@ sub init {
 	# initialize snapshot index
 	$self->_save_snapshot_index();
 	# initialize log file (by writing to it)
-	$self->write_log_entry('INIT', "Backup initialized", JSON::json_decode($json));
+	$self->write_log_entry('INIT', "Backup initialized", decode_json($json));
 
 	return $self;
 }
@@ -523,7 +530,7 @@ sub _get_module_constructor_args {
 	my $args= $self->config->{$field_name};
 	defined ($args)
 		or die "No $thing_name was passed to the constructor, and config.$field_name is missing\n";
-	ref $args eq 'ARRAY' and 3 <= @$args
+	ref $args eq 'ARRAY' and 2 <= @$args
 		or die "No $thing_name was passed to the constructor, and config.$field_name is invalid\n";
 	my ($class, $version, @args)= @$args;
 
@@ -540,7 +547,7 @@ sub _get_module_constructor_args {
 	
 	# use clone of $args
 	# Could use dclone, but we've already loaded the JSON module, and thats where it came from anyway
-	return ( $class, @{JSON::json_decode(JSON::json_encode(\@args))} );
+	return ( $class, @{decode_json(encode_json(\@args))} );
 }
 
 # lazy-build cas from config->{cas}
@@ -554,7 +561,6 @@ sub _build_cas {
 		$args[0]->{path}= File::Spec->rel2abs($args[0]->{path}, $self->backup_dir)
 			unless File::Spec->file_name_is_absolute($args[0]->{path});
 	}
-
 	$class->new(@args);
 }
 
@@ -574,12 +580,17 @@ sub _build_extractor {
 
 # lazy-build snapshot_index from the snapshot index file in backup_dir
 sub _build_snapshot_index {
-	$_[0]->_read_snapshot_index($_[0]->snapshot_index_filename);
+	my $self= shift;
+	$self->_read_snapshot_index($self->snapshot_index_filename);
 }
 
 # save the current value of snapshot_index back to the index file
 sub _save_snapshot_index {
-	$_[0]->_write_snapshot_index($_[0]->snapshot_index_filename);
+	my $self= shift;
+	$self->_write_snapshot_index(
+		$self->snapshot_index_filename,
+		$self->snapshot_index
+	);
 }
 
 # lazy-build date_format from config->{date_format}
@@ -614,8 +625,8 @@ sub _write_snapshot_index {
 	my ($class, $index_file, $snapshot_array)= @_;
 	# Build a string of TSV (tab separated values)
 	my $data= join '',
-		"Timestampt\tHash\tComment\n",
-		map { join("\t", @$_)."\n" } @$snapshot_array;
+		"Timestamp\tHash\tComment\n",
+		(map { join("\t", @$_)."\n" } @$snapshot_array);
 	# Write it to a temp file, and then rename to the official name
 	my $temp_file= $index_file . '.tmp';
 	$class->_overwrite_or_die($temp_file, $data);
@@ -629,8 +640,8 @@ sub _read_snapshot_index {
 	my $tsv= $class->_slurp_or_die($index_file);
 	my @lines= split /\r?\n/, $tsv;
 	my $header= shift @lines;
-	$header eq "Timestampt\tHash\tComment"
-		or die "Invalid snapshot index (wrong header): '$index_file'\n";
+	$header eq "Timestamp\tHash\tComment"
+		or die "Invalid snapshot index (wrong header) in '$index_file'\n";
 	my @entries;
 	for (@lines) {
 		my @fields= split /\t/, $_, 3;

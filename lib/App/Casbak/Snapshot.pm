@@ -18,6 +18,7 @@ Returns a new DataStore::CAS::FS object to view the snapshot.
 =cut
 
 sub new_fs {
+	my $self= shift;
 	DataStore::CAS::FS->new( store => $self->cas, root_entry => $self->root_entry );
 }
 

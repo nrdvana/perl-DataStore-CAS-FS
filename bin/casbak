@@ -30,7 +30,7 @@ sub pod2usage {
 	require Pod::Usage;
 	
 	# Get the POD text from whichever command we're running
-	my $pod= $cmd->getHelpPOD();
+	my $pod= $cmd->get_pod();
 	open my $stream, '<', \$pod;
 	
 	Pod::Usage::pod2usage(-input => $stream, @_);
@@ -42,7 +42,7 @@ try {
 	# This command object will re-bless itself into a subclass of App::Casbak::Cmd
 	#  based on which sub-command the user specified, which gives us appropriate
 	#  help text in case of errors.
-	$cmd->applyArguments(@ARGV);
+	$cmd->apply_args(@ARGV);
 }
 catch {
 	# Exceptions during 'applyArguments' indicate invalid arguments
@@ -58,14 +58,14 @@ App::Casbak->SetLogLevel($cmd->verbosity);
 App::Casbak::Trace($cmd);
 
 # They specified '--version'. Print it and exit.
-if ($cmd->wantVersion) {
+if ($cmd->want_version) {
 	print App::Casbak->VersionMessage();
-	exit($cmd->allowNoop? 0 : 1);
+	exit($cmd->allow_no_op? 0 : 1);
 }
 
 # They specified '--help'.  Print the full POD and exit.
-if ($cmd->wantHelp) {
-	pod2usage(-verbose => 2, -exitcode => ($cmd->allowNoop? 0 : 1));
+if ($cmd->want_help) {
+	pod2usage(-verbose => 2, -exitcode => ($cmd->allow_no_op? 0 : 1));
 }
 
 # Try running the command.  Exceptons are printed as-is, but we also want to exit with 3.
