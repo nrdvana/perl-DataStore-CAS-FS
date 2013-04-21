@@ -26,8 +26,9 @@ sub entries { $_[0]{entries} ||= {} }
 
 sub get {
 	my ($self, $hash)= @_;
-	return undef unless defined $self->entries->{$hash};
-	return bless { store => $self, hash => $hash, size => length($self->entries->{$hash}) }, 'DataStore::CAS::File';
+	defined (my $data= $self->entries->{$hash})
+		or return undef;
+	return bless { store => $self, hash => $hash, size => length($data), data => $data }, 'DataStore::CAS::File';
 }
 
 sub put_scalar {
