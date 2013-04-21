@@ -579,17 +579,15 @@ sub set_path {
 	# replace the final entry, after applying defaults
 	if (!$newent) {
 		$newent= 0; # 0 means unlink
-	} else {
-		$newent= DataStore::CAS::FS::Dir::Entry->new({ %$newent })
-			if ref $newent eq 'HASH';
-		if (!(defined $newent->name && defined $newent->type)) {
-			my $name= defined $newent->name? $newent->name
-				: $nodes->[-1]->name;
-			my $type= defined $newent->type? $newent->type
-				: defined $nodes->[-1]->type? $nodes->[-1]->type
-				: 'file';
-			$newent= $newent->clone(name => $name, type => $type);
-		}
+	} elsif (ref $newent eq 'HASH' or !defined $newent->name or !defined $newent->type) {
+		my %ent_hash= %{ref $newent eq 'HASH'? $newent : $newent->as_hash};
+		$ent_hash{name}= $nodes->[-1]{entry}->name
+			unless defined $ent_hash{name};
+		defined $ent_hash{name} && length $ent_hash{name}
+			or die "No name for new dir entry";
+		$ent_hash{type}= $nodes->[-1]{entry}->type || 'file'
+			unless defined $ent_hash{type};
+		$newent= DataStore::CAS::FS::Dir::Entry->new(\%ent_hash);
 	}
 	$nodes->[-1]{entry}= $newent;
 	$self->_apply_overrides($nodes);
