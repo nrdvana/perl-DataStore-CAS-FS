@@ -7,6 +7,7 @@ use Carp;
 use Try::Tiny;
 require JSON;
 require DataStore::CAS::FS::NonUnicode;
+require DataStore::CAS::FS::DirEnt;
 
 our $VERSION= 1.0000;
 
@@ -110,7 +111,7 @@ sub encode {
 
 	# remove trailing comma
 	substr($ret, -2)= "\n" if @entries;
-	return $ret."]}\n";
+	return $ret."]}";
 }
 
 =head2 $class->decode( \%params )

@@ -17,19 +17,20 @@ DataStore::CAS::FS::Scanner
 
 =head1 ATTRIBUTES
 
-=head2 dir_class
+=head2 dir_format
 
-Read/write.  Directory class to use when encoding directories.
+Read/write.  Directory format to use when encoding directories.
 
 Directories can be recorded with varying levels of metadata
 (determined by the scanner) and encoded in a variety of formats which
 are optimized for various uses.
 
-When setting this value after the constructor, you must use a full package
-name; the partial names are only allowed in the constructor.  Also you must
-load the class yourself.
+The format strings are registered by DirCodec classes when loaded.
+See L<DataStore::CAS::FS::DirCodec>.
+Built-in formats are 'universal', 'minimal', or 'unix'.
 
-This class will be the default used by 'store_dir'.
+Calls to store_dir will encode directories in this format.  The default is
+'universal'.
 
 =head2 filter
 
@@ -62,7 +63,11 @@ results.
 
 =cut
 
-sub dir_class       { $_[0]{dir_class}= $_[1] if (scalar(@_)>1); $_[0]{dir_class} || 'DataStore::CAS::FS::Dir' }
+sub dir_format {
+	my $self= shift;
+	$self->{dir_format}= $_[1] if (scalar(@_)>1);
+	$self->{dir_format}
+}
 
 our %_flag_defaults;
 BEGIN {
@@ -107,7 +112,7 @@ sub _handle_dir_error {
 
 =over
 
-=item dir_class - optional
+=item dir_format - optional
 
 Allows you to specify the default directory encoding that will be used for
 put_dir.  See the dir_class attribute.
@@ -115,7 +120,7 @@ put_dir.  See the dir_class attribute.
 The parameter can be a full class name, or a string without colons which
 will be interpreted as a package in the DataStore::CAS::FS::Dir:: namespace.
 
-The default dir_class is "DataStore::CAS::FS::Dir", which encodes all
+The default dir_format is "universal", which encodes all
 metadata using a canonical JSON format.  This isn't particularly efficient
 though, and most likely you want the "Unix" encoding (which stores only the
 standard "stat" array, without the inefficiency of hash keys)
@@ -130,7 +135,7 @@ sub new {
 	$class->_ctor(\%p);
 }
 
-our @_ctor_params= (qw: dir_class filter flags id_mapper :, keys %_flag_defaults);
+our @_ctor_params= (qw: dir_format filter flags id_mapper :, keys %_flag_defaults);
 
 sub _ctor {
 	my ($class, $p)= @_;
@@ -145,6 +150,8 @@ sub _ctor {
 
 	$self{uid_cache} ||= {};
 	$self{gid_cache} ||= {};
+	$self{dir_format}= 'universal'
+		unless defined $self{dir_format};
 
 	exists $self{id_mapper}
 		or $self{id_mapper}= DataStore::CAS::FS::Scanner::DefaultIdMapper->new();
@@ -194,7 +201,6 @@ sub scan_dir_ent {
 	}
 	if ($self->include_unix_time) {
 		$attrs{unix_atime}= $stat->[8];
-		$attrs{unix_mtime}= $stat->[9];
 		$attrs{unix_ctime}= $stat->[10];
 	}
 	if ($self->include_unix_misc) {
@@ -211,7 +217,7 @@ sub scan_dir_ent {
 		# TODO
 	}
 	if ($attrs{type} eq 'dir') {
-		$attrs{size}= 0;
+		delete $attrs{size};
 	}
 	elsif ($attrs{type} eq 'file') {
 		if ($prev_ent_hint) {
@@ -296,18 +302,17 @@ sub store_dir {
 				and (length $subdir_hint_ent->hash)
 			) {
 				($subdir_hint_file= $cas->get($subdir_hint_ent->hash))
-					and ($subdir_hint= try { DataStore::CAS::FS::Dir->new($subdir_hint_file); })
+					and ($subdir_hint= try { DataStore::CAS::FS::DirCodec->load($subdir_hint_file); })
 					or $self->_handle_hint_error(
 						"Unable to load hint dir for '$dname'"
 						." (hash ".$subdir_hint_ent->hash.")"
 					);
 			}
-			$entry->{hash}= $self->store_dir($cas, $dname, $subdir_hint, $self->dir_class);
+			$entry->{hash}= $self->store_dir($cas, $dname, $subdir_hint, $self->dir_format);
 		}
 	}
 	# now, we encode it!
-	my $serialized= $self->dir_class->SerializeEntries( $data->{entries}, $data->{metadata} );
-	return $cas->put_scalar($serialized);
+	return DataStore::CAS::FS::DirCodec->store($cas, $self->dir_format, $data->{entries}, $data->{metadata} );
 }
 
 package DataStore::CAS::FS::Scanner::FastStat;

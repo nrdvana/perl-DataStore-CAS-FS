@@ -44,7 +44,7 @@ sub extract {
 		close $dest_fh or die "close: $!";
 	}
 	elsif ($entry->type eq 'dir') {
-		my $d= DataStore::CAS::FS::Dir->new(file => $cas->get($hash))
+		my $d= DataStore::CAS::FS::DirCodec->load($cas->get($hash))
 			or die "Store is missing entry '$hash'\n";
 		my $iter= $d->iterator;
 		while (defined (my $ent= $iter->())) {

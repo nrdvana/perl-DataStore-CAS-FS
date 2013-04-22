@@ -5,12 +5,14 @@ use warnings;
 use Carp;
 use Try::Tiny;
 require JSON;
-use DataStore::CAS::FS::NonUnicode;
+require DataStore::CAS::FS::NonUnicode;
+require DataStore::CAS::FS::Dir;
 
 use parent 'DataStore::CAS::FS::DirCodec';
 
 our $VERSION= 1.0000;
 
+__PACKAGE__->register_format('minimal' => __PACKAGE__);
 __PACKAGE__->register_format('' => __PACKAGE__);
 
 =head1 NAME
@@ -75,7 +77,8 @@ sub encode {
 
 sub decode {
 	my ($class, $params)= @_;
-	defined $params->{format} or $params->{format}= $class->_read_format($params);
+	$params->{format}= $class->_read_format($params)
+		unless defined $params->{format};
 	my $bytes= $params->{data};
 	my $handle= $params->{handle};
 	# This implementation just processes the file as a whole.
@@ -116,7 +119,7 @@ sub decode {
 	}
 	return DataStore::CAS::FS::Dir->new(
 		file => $params->{file},
-		format => $params->{format},
+		format => 'minimal', # we encode with format string '', but this is what we want the user to see.
 		entries => \@ents,
 		metadata => $params->{metadata}
 	);
@@ -130,6 +133,13 @@ use parent 'DataStore::CAS::FS::DirEnt';
 sub type { $_CodeToType{$_[0][0]} }
 sub name { $_[0][1] }
 sub ref  { $_[0][2] }
-sub as_hash { return $_[0][3] ||= { type => $_[0]->type, name => $_[0]->name, ref => $_[0]->ref } }
+sub as_hash {
+	my $self= shift;
+	return $self->[3] ||= {
+		type => $self->type,
+		name => $self->name,
+		(defined $self->[2]? (ref => $self->[2]) : ())
+	};
+}
 
 1;

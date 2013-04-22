@@ -1,4 +1,4 @@
-#!perl -T
+#! /usr/bin/env perl -T
 use strict;
 use warnings;
 
@@ -10,7 +10,11 @@ use_ok('DataStore::CAS::FS::Dir') || BAIL_OUT;
 use_ok('DataStore::CAS::FS::DirEnt') || BAIL_OUT;
 use_ok('DataStore::CAS') || BAIL_OUT;
 
-my $f= bless { store => 'x', hash => 'y', size => 'z' }, 'DataStore::CAS::File';
+package BogusCAS;
+sub _file_destroy {}
+package main;
+
+my $f= bless { store => bless({}, 'BogusCAS'), hash => 'y', size => 'z' }, 'DataStore::CAS::File';
 sub new_dir_ok { new_ok( 'DataStore::CAS::FS::Dir', @_ ) }
 sub new_dirent_ok { new_ok( 'DataStore::CAS::FS::DirEnt', @_ ) }
 
@@ -19,7 +23,7 @@ subtest ctor => sub {
 	is( $d->file, $f, 'file' );
 	is( $d->size, 'z', 'size' );
 	is( $d->hash, 'y', 'hash' );
-	is( $d->store, 'x', 'store' );
+	is( ref $d->store, 'BogusCAS', 'store' );
 	is( $d->format, 'Foo', 'format' );
 	is( $d->metadata->{hello}, 1, 'metadata' );
 
@@ -30,9 +34,6 @@ subtest ctor => sub {
 };
 
 subtest get => sub {
-	my @entries= (
-		new_dirent_ok( [ type => 'file', name => 'x' ] )
-	);
 	my $d= new_dir_ok( [ file => $f, format => 'Foo' ] );
 	is( $d->get_entry('x'), undef );
 	is( $d->get_entry('x', { case_insensitive => 1 }), undef );
@@ -58,7 +59,7 @@ subtest iterator => sub {
 		new_dirent_ok( [ type => 'file', name => 'x' ] )
 	);
 	$d= new_dir_ok( [ file => $f, format => 'Foo', entries => \@entries ] );
-	is( ref(my $i= $d->iterator), 'CODE', 'iterator' );
+	is( ref($i= $d->iterator), 'CODE', 'iterator' );
 	is( $i->(), $entries[0], 'elem 1' );
 	is( $i->(), undef, 'eof' );
 	is( $i->(), undef, 'past eof' );

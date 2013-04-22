@@ -1,4 +1,4 @@
-#!perl -T
+#! /usr/bin/env perl -T
 
 use Test::More;
 
@@ -10,6 +10,7 @@ use_ok $_ or BAIL_OUT("use $_")
 		DataStore::CAS::FS
 		DataStore::CAS::FS::Dir
 		DataStore::CAS::FS::Scanner
+		DataStore::CAS::FS::Extractor
 	);
 
 diag( "Testing DataStore::CAS $DataStore::CAS::VERSION, Perl $], $^X" );

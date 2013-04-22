@@ -136,7 +136,7 @@ sub load {
 	# Once we get the name of the format, we can jump over to the constructor
 	# for the appropriate class
 	my $codec= $_Formats{$p{format}}
-		or croak "Unknown directory format '$p{format}' in ".$p{file}->ref
+		or croak "Unknown directory format '$p{format}' in ".$p{file}->hash
 			."\n(be sure to load relevant modules)\n";
 	return $codec->decode(\%p);
 }

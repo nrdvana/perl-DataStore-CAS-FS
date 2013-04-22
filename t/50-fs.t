@@ -1,4 +1,4 @@
-#!perl -T
+#! /usr/bin/env perl -T
 use strict;
 use warnings;
 use Carp::Always;
@@ -49,7 +49,7 @@ sub _buildTree {
 	my ($node, $id)= @_;
 	if (ref $node eq 'HASH') {
 		my @entries= map { { name => $_, _buildTree($node->{$_}, "$id.$_") } } keys %$node;
-		$content{$id}= DataStore::CAS::FS::Dir->SerializeEntries(\@entries, {});
+		$content{$id}= DataStore::CAS::FS::DirCodec::Universal->encode(\@entries, {});
 		return type => 'dir', ref => $id;
 	}
 	elsif (ref $node eq 'SCALAR') {

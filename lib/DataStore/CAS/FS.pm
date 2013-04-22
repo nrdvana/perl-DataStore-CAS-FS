@@ -134,7 +134,7 @@ Read-only.  Passes through to store->hash_of_null
 This returns the canonical digest hash for an empty directory.
 In other words, the return value of
 
-  put_scalar( DataStore::CAS::FS::Dir->SerializeEntries([],{}) ).
+  put_scalar( DataStore::CAS::FS::DirCodec::Minimal->encode([],{}) ).
 
 This value is cached for performance.
 
@@ -193,7 +193,7 @@ which contains one, or a digest hash of that File within the store.
 
 sub _calc_empty_dir_hash {
 	my ($class, $store)= @_;
-	my $empty= DataStore::CAS::FS::Dir->SerializeEntries([],{});
+	my $empty= DataStore::CAS::FS::DirCodec::Minimal->encode([],{});
 	return $store->put_scalar($empty);
 }
 
@@ -296,7 +296,7 @@ sub get_dir {
 		unless defined ($file ||= $self->store->get($hash));
 	
 	# Deserialize directory.  This can throw exceptions if it isn't a valid encoding.
-	$dir= DataStore::CAS::FS::Dir->new($file);
+	$dir= DataStore::CAS::FS::DirCodec->load($file);
 	# Cache it
 	$self->dir_cache->put($dir);
 	return $dir;
@@ -754,8 +754,10 @@ sub _commit_recursive {
 	# Now re-encode the directory, using the same type as orig_dir
 	return $self->hash_of_empty_dir
 		unless @entries;
-	my $dir_cls= $node->{dir}? ref $node->{dir} : 'DataStore::CAS::FS::Dir';
-	return $self->put_scalar( $dir_cls->SerializeEntries(\@entries, {}) );
+	my $format= $node->{dir}->format
+		if $node->{dir};
+	$format= 'universal' unless defined $format;
+	return DataStore::CAS::FS::DirCodec->store($self->store, $format, \@entries, {});
 }
 
 =head1 EXTENDING
