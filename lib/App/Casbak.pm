@@ -260,11 +260,10 @@ sub canonical_date {
 		# is it a relative date?
 		if ($date =~ /^(\d+)([DWMY])$/) {
 			require DateTime;
-			my $delta= DateTime::Duration->new($_suffix_to_date_field{$2} => $1, end_of_month => 'preserve');
 			my $dt= !defined $now? DateTime->now(time_zone => 'floating')
 				: !ref $now? DateTime->from_epoch(epoch => $now, time_zone => 'floating')
 				: do { my $d= $now->clone; $d->set_time_zone('floating'); $d; };
-			$date= $dt->subtract($delta);
+			$date= $dt->subtract($_suffix_to_date_field{$2} => $1, end_of_month => 'preserve');
 		}
 		# else we have to parse it
 		else {
@@ -319,7 +318,7 @@ sub get_snapshot {
 	my ($err, $snap);
 	try {
 		my $file= $self->cas->get($item->[1]);
-		my $dir= DataStore::CAS::FS::Dir->new($file);
+		my $dir= DataStore::CAS::FS::DirCodec->load($file);
 		my $iter= $dir->iterator;
 		my ($root_ent, $bogus)= ( $iter->(), $iter->() );
 		defined $root_ent or die "no root entry\n";
@@ -409,8 +408,7 @@ sub save_snapshot {
 		or croak "New timestamp '$metadata->{timestamp}' must be later than last recorded timestamp '$array->[-1][0]'";
 	
 	# Serialize the new snapshot and store it in the CAS
-	my $encoded= DataStore::CAS::FS::Dir->SerializeEntries([ $root_entry ], $metadata);
-	my $hash= $self->cas->put($encoded);
+	my $hash= DataStore::CAS::FS::DirCodec->store($self->cas, 'universal', [ $root_entry ], $metadata);
 	
 	# Append the new snapshot to the end of the snapshot index
 	push @$array, [ $metadata->{timestamp}, $hash, $metadata->{comment} || '' ];
@@ -458,7 +456,7 @@ sub init {
 	# Directory must exist and be empty
 	my @entries= grep { $_ ne '.' && $_ ne '..' } <$dir/*>;
 	-d $dir && -r $dir && -w $dir && -x $dir && 0 == @entries
-		or do { use DDP; p($ctor_args); die "Backups may only be initialized in an empty writeable directory\n" };
+		or die "Backups may only be initialized in an empty writeable directory\n";
 
 	# Record our own version in the config
 	$ctor_args->{config}{VERSION}= $class->VERSION;
@@ -466,11 +464,13 @@ sub init {
 	# Make a copy of config, which will be saved to the config file
 	require JSON;
 	my $json= JSON->new->utf8->pretty->canonical->encode($ctor_args->{config});
-
-	# If the CAS class supports 'create', we request it.
-	my %validParams= map { $_ => 1 } $ctor_args->{config}{cas}[0]->_ctor_params;
-	$ctor_args->{config}{cas}[2]{create}= 1
-		if !defined $ctor_args->{config}{cas}[2]{create} and $validParams{create};
+	
+	# If we're using a relative 'path', add the 'create' parameter.
+	my $cas_cfg= $ctor_args->{config}{cas}[2];
+	$cas_cfg->{create}= 1
+		if defined $cas_cfg && !defined $cas_cfg->{create}
+			&& defined $cas_cfg->{path}
+			&& !File::Spec->file_name_is_absolute($cas_cfg->{path});
 
 	# Initialize snapshotIndex to prevent it from getting loaded from a file that doesn't exist yet.
 	$ctor_args->{snapshot_index}= [];
@@ -526,7 +526,7 @@ sub _build_config {
 # get a list of constructor args for some unknown class by inspecting config->$field_name
 # returns a list of ($class, @args), where @args is usually just a single hashref.
 sub _get_module_constructor_args {
-	my ($self, $field_name, $thing_name, $required_ancestor, $required_method)= @_;
+	my ($self, $field_name, $thing_name, $required_methods)= @_;
 	my $args= $self->config->{$field_name};
 	defined ($args)
 		or die "No $thing_name was passed to the constructor, and config.$field_name is missing\n";
@@ -541,9 +541,8 @@ sub _get_module_constructor_args {
 		if defined $version;
 
 	# Check features of the loaded class
-	(!defined $required_ancestor || $class->isa($required_ancestor))
-	&& (!defined $required_method || $class->can($required_method))
-		or die "'$class' is not a valid $thing_name class\n";
+	$class->can($_) || die "'$class' is not a valid $thing_name class\n"
+		for (ref $required_methods? @$required_methods : ( $required_methods ));
 	
 	# use clone of $args
 	# Could use dclone, but we've already loaded the JSON module, and thats where it came from anyway
@@ -553,7 +552,7 @@ sub _get_module_constructor_args {
 # lazy-build cas from config->{cas}
 sub _build_cas {
 	my $self= shift;
-	my ($class, @args)= $self->_get_module_constructor_args('cas', 'CAS', 'DataStore::CAS', undef);
+	my ($class, @args)= $self->_get_module_constructor_args('cas', 'CAS', 'new_write_handle');
 
 	# If the constructor has a 'path' parameter and it is relative, we convert
 	# it to be relative to backup_dir.
@@ -567,14 +566,14 @@ sub _build_cas {
 # lazy-build scanner from config->{scanner}
 sub _build_scanner {
 	my $self= shift;
-	my ($class, @args)= $self->_get_module_constructor_args('scanner', 'Scanner', 'DataStore::CAS::FS::Scanner', undef);
+	my ($class, @args)= $self->_get_module_constructor_args('scanner', 'Scanner', 'scan_dir');
 	$class->new(@args);
 }
 
 # lazy-build extractor from config->{extractor}
 sub _build_extractor {
 	my $self= shift;
-	my ($class, @args)= $self->_get_module_constructor_args('extractor', 'Extractor', 'DataStore::CAS::FS::Extractor', undef);
+	my ($class, @args)= $self->_get_module_constructor_args('extractor', 'Extractor', 'extract');
 	$class->new(@args);
 }
 
@@ -596,7 +595,7 @@ sub _save_snapshot_index {
 # lazy-build date_format from config->{date_format}
 sub _build_date_format {
 	my $self= shift;
-	my ($class, @args)= $self->_get_module_constructor_args('date_format', 'Date Format', undef, 'parse_datetime');
+	my ($class, @args)= $self->_get_module_constructor_args('date_format', 'Date Format', 'parse_datetime');
 	$class->new(@args);
 }
 

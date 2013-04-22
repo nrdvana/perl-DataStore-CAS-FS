@@ -65,7 +65,6 @@ sub run {
 	);
 
 	for my $path_spec ($self->path_list) {
-		use DDP; p($path_spec);
 		my $hint;
 		if ($self->compare_meta_only) {
 			my $hint_path= $fs->resolve_path($path_spec->{virt}, { no_die => 1 });

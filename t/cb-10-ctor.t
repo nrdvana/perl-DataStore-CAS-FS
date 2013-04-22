@@ -1,4 +1,4 @@
-#!perl
+#! /usr/bin/env perl
 
 use Test::More;
 use Try::Tiny;
@@ -25,7 +25,7 @@ my $config= {
 	cas => [ 'DataStore::CAS::Simple', undef, { path => '../cas_simple' } ],
 	scanner => [ 'DataStore::CAS::FS::Scanner', undef ],
 	extractor => [ 'DataStore::CAS::FS::Extractor', undef ],
-	date_parser => [ 'Date::PArser::Natural', undef ],
+	date_format => [ 'DateTime::Format::Natural', undef ],
 };
 
 subtest 'snapshot_index' => sub {
@@ -47,7 +47,8 @@ subtest 'constructor' => sub {
 	cleandir();
 	subtest 'new from init' => sub {
 		my $cb= isa_ok( App::Casbak->init({ backup_dir => './cas_tmp/casbak', config => dclone($config) }), 'App::Casbak' );
-		ok( -f './cas_tmp/cas_simple/VERSION', 'cas initialized in correct dir' );
+		ok( -f './cas_tmp/cas_simple/conf/VERSION', 'cas initialized in correct dir' )
+			or diag `find ./cas_tmp`;
 		ok( -f './cas_tmp/casbak/casbak.conf.json', 'casbak initialized in correct dir' );
 		done_testing;
 	};
@@ -63,7 +64,7 @@ subtest 'constructor' => sub {
 	cleandir();
 	subtest 'new from objects' => sub {
 		my $cas= new_ok( 'DataStore::CAS::Simple', [ path => './cas_tmp/cas_simple', create => 1 ] );
-		my $cb= new_ok( 'App::Casbak', [ backup_dir => './cas_tmp/casbak', cas => $cb->cas, snapshot_index => [] ] );
+		my $cb= new_ok( 'App::Casbak', [ backup_dir => './cas_tmp/casbak', cas => $cas, snapshot_index => [] ] );
 		done_testing;
 	};
 

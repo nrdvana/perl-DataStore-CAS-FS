@@ -14,13 +14,7 @@ sub run {
 	my $self= shift;
 	my $cfg= ($self->casbak_args->{config} ||= {});
 
-	$cfg->{cas}= $self->_build_module_args($self->user_config->{cas}, 'DataStore::CAS::Simple');
-	$cfg->{cas}[2] ||= {};
-	my %validParams= map { $_ => 1 } $cfg->{cas}[0]->_ctor_params;
-
-	# If the CAS class supports 'path', we supply $backup_dir/store as the default.
-	$cfg->{cas}[2]{path}= 'store'
-		if (!defined $cfg->{cas}[2]{path} and $validParams{path});
+	$cfg->{cas}= $self->_build_module_args($self->user_config->{cas});
 
 	$cfg->{scanner}= $self->_build_module_args($self->user_config->{scanner}, 'DataStore::CAS::FS::Scanner');
 	
@@ -87,29 +81,30 @@ sub apply {
 }
 
 our %_store_aliases= (
-	simple => 'DataStore::CAS::Simple',
+	simple  => { CLASS => 'DataStore::CAS::Simple', path => 'store' },
 );
 sub apply_cas {
 	my ($self, $spec)= @_;
 	
-	my $class= $_store_aliases{lc $spec}
-		|| is_module_name($spec)? $spec : die "Invalid store spec '$spec'\n";
-
-	$self->apply('cas.store.CLASS' => $class);
+	if (my $opts= $_store_aliases{lc $spec}) {
+		$self->apply("cas.$_" => $opts->{$_})
+			for keys %$opts;
+	} else {
+		is_module_name($spec) or die "Invalid store spec '$spec'\n";
+		$self->apply('cas.CLASS' => $spec);
+	}
 }
 
-our %_dir_aliases= (
-	universal => 'DataStore::CAS::FS:Dir',
-	minimal   => 'DataStore::CAS::FS:Dir::Minimal',
-	unix      => 'DataStore::CAS::FS:Dir::Unix',
-);	
+our %_dir_types= ( map { $_ => 1 } qw: universal minimal unix : );
 sub apply_dirtype {
 	my ($self, $spec)= @_;
 
-	my $class= $_dir_aliases{lc $spec}
-		|| is_module_name($spec)? $spec : die "Invalid dirtype argument '$spec'\n";
-	
-	$self->apply('cas.scanner.dir_class' => $class);
+	if (my $opt= $_dir_types{lc $spec}) {
+		$self->apply('scanner.dir_format' => $opt);
+	} else {
+		is_module_name($spec) or die "Invalid dirtype argument '$spec'\n";
+		$self->apply('scanner.dir_format' => $spec);
+	}
 }
 
 sub apply_digest {
