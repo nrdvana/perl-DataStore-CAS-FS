@@ -1,11 +1,11 @@
 package DataStore::CAS::Simple;
 use 5.008;
-use strict;
-use warnings;
+use Moo;
 use Carp;
 use Try::Tiny;
+use Module::Runtime;
+use Carp::Always;
 
-use parent 'DataStore::CAS';
 our $VERSION = '0.0100';
 
 =head1 NAME
@@ -82,21 +82,22 @@ A fanout of "[ 2, 2 ]" creates a regex of "/(.{2})(.{2})(.*)/"
 
 =cut
 
-sub path   { $_[0]{path} }
+has path             => ( is => 'ro', required => 1 );
+has copy_buffer_size => ( is => 'rw', default => sub { 256*1024 } );
+has _config          => ( is => 'rwp', init_arg => undef );
+sub fanout              { [ $_[0]->fanout_list ] }
+sub fanout_list         { @{ $_[0]->_config->{fanout} } }
+sub digest              { $_[0]->_config->{digest} }
 
-sub fanout { [ @{$_[0]{fanout}} ] }
+has _fanout_regex    => ( is => 'lazy' );
 
-sub _fanout_regex {
-	$_[0]{_fanout_regex} ||= do {
-		my $regex= join('', map { "(.{$_})" } @{$_[0]->fanout} ).'(.*)';
-		qr/$regex/;
-	};
+sub _build__fanout_regex {
+	my $self= shift;
+	my $regex= join('', map { "(.{$_})" } $self->fanout_list ).'(.*)';
+	qr/$regex/;
 }
 
-sub copy_buffer_size {
-	$_[0]{copy_buffer_size}= $_[1] if (@_ > 1);
-	$_[0]{copy_buffer_size} || 256*1024
-}
+with 'DataStore::CAS';
 
 =head1 METHODS
 
@@ -122,58 +123,45 @@ Otherwise, it is loaded from the store's configuration.
 newer version of the ::CAS::Simple package that you are now using.
 (or a different package entirely)
 
-To dynamically find out which parameters the constructor accepts,
-call $class->_ctor_params(), which returns a list of valid keys.
-
 =cut
 
-# We inherit 'new', and implement '_ctor'.  The parameters to _ctor are always a hash.
-
-our @_ctor_params= qw: path copy_buffer_size create ignore_version :;
-our @_create_params= qw: digest fanout _notest :;
-sub _ctor_params { ($_[0]->SUPER::_ctor_params, @_ctor_params, @_create_params); }
-sub _ctor {
-	my ($class, $params)= @_;
-	my %p= map { $_ => delete $params->{$_} } @_ctor_params;
-	my %create= map { $_ => delete $params->{$_} } @_create_params;
+sub BUILD {
+	my ($self, $args)= @_;
+	my ($create, $ignore_version, $digest, $fanout, $_notest)=
+		delete @{$args}{'create','ignore_version','digest','fanout','_notest'};
 
 	# Check for invalid params
-	croak "Invalid parameter: ".join(', ', keys %$params)
-		if (keys %$params);
+	my @inval= grep { !$self->can($_) } keys %$args;
+	croak "Invalid parameter: ".join(', ', @inval)
+		if @inval;
 
-	# extract constructor flags which don't belong in attributes
-	my $create= delete $p{create};
-	my $ignore_version= delete $p{ignore_version};
-	
 	# Path is required, and must be a directory
-	croak "Parameter 'path' is required"
-		unless defined $p{path};
-	if (!-d $p{path}) {
-		croak "Path '$p{path}' is not a directory"
+	my $path= $self->path;
+	if (!-d $path) {
+		croak "Path '$path' is not a directory"
 			unless $create;
-		mkdir $p{path}
-			or die "Can't create directory '$p{path}'";
+		mkdir $path
+			or die "Can't create directory '$path'";
 	}	
 
 	# Check directory
-	unless (-f catfile($p{path}, 'conf', 'VERSION')) {
-		croak "Path does not appear to be a valid CAS : '$p{path}'"
+	my $setup= 0;
+	unless (-f catfile($path, 'conf', 'VERSION')) {
+		croak "Path does not appear to be a valid CAS : '$path'"
 			unless $create;
 
 		# Here, we are creating a new CAS directory
-		$class->create_store( path => $p{path}, %create );
+		$self->create_store({ digest => $digest, path => $path, fanout => $fanout });
+		$setup= 1;
 	}
 
-	my $cfg= $class->_load_config($p{path}, { ignore_version => $ignore_version });
-	%p= (%p, %$cfg); # merge new parameters loaded from store config
+	$self->_set__config( $self->_load_config($path, { ignore_version => $ignore_version }) );
 
-	my $self= $class->SUPER::_ctor($params);
-	%$self= (%$self, %p); # merge our attributes with parent class
-	
-	unless ($create{_notest}) {
+	if ($setup) {
+		$self->put('');
+	} else {
 		# Properly initialized CAS will always contain an entry for the empty string
-		$self->{hash_of_null}= $self->_new_digest->hexdigest();
-		croak "CAS dir '".$self->path."' is missing a required file"
+		croak "CAS dir '$path' is missing a required file"
 		     ." (has it been initialized?)"
 			unless $self->validate($self->hash_of_null);
 	}
@@ -185,6 +173,7 @@ sub _ctor {
 # Also called during constrctor when { create => 1 }
 sub create_store {
 	my $class= shift;
+	$class= ref $class if ref $class;
 	my %params= (@_ == 1? %{$_[0]} : @_);
 	
 	defined $params{path} or croak "Missing required param 'path'";
@@ -195,7 +184,7 @@ sub create_store {
 
 	$params{digest} ||= 'SHA-1';
 	# Make sure the algorithm is available
-	my $found= ( try { defined $class->_new_digest($params{digest}); } catch { 0; } )
+	my $found= ( try { defined $class->_new_digest($params{digest}); } catch { print "#$_\n"; 0; } )
 		or croak "Digest algorithm '".$params{digest}."'"
 		        ." is not available on this system.\n";
 
@@ -208,15 +197,13 @@ sub create_store {
 	$class->_write_config_setting($params{path}, 'VERSION', $class.' '.$VERSION."\n");
 	$class->_write_config_setting($params{path}, 'digest', $params{digest}."\n");
 	$class->_write_config_setting($params{path}, 'fanout', join(' ', @{$params{fanout}})."\n");
-	
-	# Finally, we add the null string to an instance of the CAS.
-	$class->new(path => $params{path}, _notest => 1)->put('');
 }
 
 # This method loads the digest and fanout configuration and validates it
 # It is called during the constructor.
 sub _load_config {
 	my ($class, $path, $flags)= @_;
+	$class= ref $class if ref $class;
 	my %params;
 	
 	# Version str is "$PACKAGE $VERSION\n", where version is a number but might have a
@@ -225,13 +212,13 @@ sub _load_config {
 		$class->_parse_version($class->_read_config_setting($path, 'VERSION'));
 	unless ($flags->{ignore_version}) {
 		while (my ($pkg, $ver)= each %{$params{storage_format_version}}) {
-			defined *{$pkg.'::VERSION'}
+			my $cur_ver= try { $pkg->VERSION };
+			defined $cur_ver
 				or croak "Class mismatch: storage dir was created using $pkg"
-				        ." but that package is not loaded now\n";
-			my $curVer= do { no strict 'refs'; ${$pkg.'::VERSION'} };
-			($ver > 0 and $ver <= $curVer)
+					." but that package is not loaded now\n";
+			(try { $pkg->VERSION($ver); 1; } catch { 0 })
 				or croak "Version mismatch: storage dir was created using"
-				        ." version '$ver' of $pkg but this is only $curVer\n";
+					." version '$ver' of $pkg but this is only $cur_ver\n";
 		}
 	}
 
@@ -460,7 +447,7 @@ sub put_file {
 		}
 	}
 	# Else use the default implementation which opens and reads the file.
-	return $self->SUPER::put_file($file, $flags);
+	goto \&DataStore::CAS::put_file;
 }
 
 sub _put_hardlink {
@@ -524,6 +511,10 @@ sub open_file {
 	open my $fh, $mode, $file->local_file
 		or croak "open: $!";
 	return $fh;
+}
+
+sub iterator {
+	...
 }
 
 # This can be called as class or instance method.

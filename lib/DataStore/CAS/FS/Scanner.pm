@@ -1,7 +1,6 @@
 package DataStore::CAS::FS::Scanner;
 use 5.008;
-use strict;
-use warnings;
+use Moo;
 use Carp;
 use Try::Tiny;
 use Fcntl ':mode';
@@ -63,12 +62,6 @@ results.
 
 =cut
 
-sub dir_format {
-	my $self= shift;
-	$self->{dir_format}= $_[1] if (scalar(@_)>1);
-	$self->{dir_format}
-}
-
 our %_flag_defaults;
 BEGIN {
 	%_flag_defaults= (
@@ -86,10 +79,12 @@ BEGIN {
 	for (keys %_flag_defaults) {
 		eval "sub $_ { \$_[0]{flags}{$_}= \$_[1] if \@_ > 1; \$_[0]{flags}{$_} }; 1" or die $@
 	}
-	for (qw: filter flags id_mapper :) {
-		eval "sub $_ { \$_[0]{$_}= \$_[1] if \@_ > 1; \$_[0]{$_} }; 1" or die $@
-	}
 }
+
+has dir_format => ( is => 'rw', default => sub { 'universal' } );
+has filter     => ( is => 'rw' );
+has flags      => ( is => 'rw', default => sub { { } } );
+has id_mapper  => ( is => 'rw', default => sub { DataStore::CAS::FS::Scanner::DefaultIdMapper->new(); } );
 
 sub _handle_hint_error {
 	croak $_[1] if $_[0]->die_on_hint_error;
@@ -108,56 +103,21 @@ sub _handle_dir_error {
 
 =head1 METHODS
 
-=head2 new( %params | \%params)
-
-=over
-
-=item dir_format - optional
-
-Allows you to specify the default directory encoding that will be used for
-put_dir.  See the dir_class attribute.
-
-The parameter can be a full class name, or a string without colons which
-will be interpreted as a package in the DataStore::CAS::FS::Dir:: namespace.
-
-The default dir_format is "universal", which encodes all
-metadata using a canonical JSON format.  This isn't particularly efficient
-though, and most likely you want the "Unix" encoding (which stores only the
-standard "stat" array, without the inefficiency of hash keys)
-
-=back
-
 =cut
 
-sub new {
-	my $class= shift;
-	my %p= ref($_[0])? %{$_[0]} : @_;
-	$class->_ctor(\%p);
+sub BUILD {
+	my ($self, $args)= @_;
+	for (keys %_flag_defaults) {
+		$self->flags->{$_}= delete $args->{$_}
+			if exists $args->{$_};
+		$self->flags->{$_}= $_flag_defaults{$_}
+			unless defined $self->flags->{$_};
+	}
+	my @invalid= grep { !$self->can($_) } keys %$args;
+	croak "Invalid param(s): ".join(', ', @invalid)
+		if @invalid;
 }
-
-our @_ctor_params= (qw: dir_format filter flags id_mapper :, keys %_flag_defaults);
-
-sub _ctor {
-	my ($class, $p)= @_;
-	my %self= map { $_ => delete $p->{$_} } @_ctor_params;
-	croak "Invalid param(s): ".join(', ', keys %$p)
-		if keys %$p;
-
-	# Extract flags into their own hashref
-	my $flags= ($self{flags} ||= {});
-	%self= (%_flag_defaults, %self, %$flags);
-	@{$flags}{keys %_flag_defaults}= delete @self{keys %_flag_defaults};
-
-	$self{uid_cache} ||= {};
-	$self{gid_cache} ||= {};
-	$self{dir_format}= 'universal'
-		unless defined $self{dir_format};
-
-	exists $self{id_mapper}
-		or $self{id_mapper}= DataStore::CAS::FS::Scanner::DefaultIdMapper->new();
-	bless \%self, $class;
-}
-
+	
 sub _split_dev_node {
 	($_[1] >> 8).','.($_[1] & 0xFF);
 }

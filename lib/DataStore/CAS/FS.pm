@@ -1,7 +1,6 @@
 package DataStore::CAS::FS;
 use 5.008;
-use strict;
-use warnings;
+use Moo;
 use Carp;
 use Try::Tiny;
 
@@ -145,14 +144,14 @@ value instead of recalculating the hash of an empty dir.
 
 =cut
 
-sub store             { $_[0]{store} }
-sub root_entry        { $_[0]{root_entry} }
-sub case_insensitive  { $_[0]{case_insensitive} }
+has store             => ( is => 'ro', required => 1, isa => \&_validate_cas );
+has root_entry        => ( is => 'rwp', required => 1 );
+has case_insensitive  => ( is => 'ro', default => sub { 0 } );
 
-sub hash_of_null      { $_[0]->store->hash_of_null }
-sub hash_of_empty_dir { $_[0]{hash_of_empty_dir} }
+sub hash_of_null         { $_[0]->store->hash_of_null }
+has hash_of_empty_dir => ( is => 'lazy' );
 
-sub dir_cache         { $_[0]{dir_cache} }
+has dir_cache         => ( is => 'rw', default => sub { DataStore::CAS::FS::DirCache->new() } );
 
 # _path_overrides is a tree of nodes, each of the form:
 # $node= {
@@ -168,7 +167,7 @@ sub dir_cache         { $_[0]{dir_cache} }
 #  If 'case_insensitive' is true, the keys will all be upper-case, but the $Dir_Entry
 #  objects will contain the correct-case name.
 #
-sub _path_overrides   { $_[0]{_path_overrides} }
+has _path_overrides   => ( is => 'rw' );
 
 =head1 METHODS
 
@@ -182,79 +181,81 @@ Parameters:
 
 An instance of DataStore::CAS
 
-=item volume_dir - required
+=item root_entry - required
 
-An instance of DataStore::CAS::FS::Dir, or an instance of DataStore::CAS::File
-which contains one, or a digest hash of that File within the store.
+An instance of DataStore::CAS::FS::DirEnt, or a hashref of DirEnt fields, or
+an empty hash if you want to start from an empty filesystem, or a
+DataStore::CAS::FS::Dir which you want to be the root directory
+(or a DataStore::CAS::File object that contains a serialized Dir) or
+or a digest hash of that File within the store.
+
+=item root - alias for root_entry
 
 =back
 
 =cut
 
-sub _calc_empty_dir_hash {
-	my ($class, $store)= @_;
+sub _build_hash_of_empty_dir {
+	my $self= shift;
 	my $empty= DataStore::CAS::FS::DirCodec::Minimal->encode([],{});
-	return $store->put_scalar($empty);
+	return $self->store->put_scalar($empty);
 }
 
-sub new {
+sub _validate_cas {
+	my $cas= shift;
+	ref($cas) && ref($cas)->can('get') && ref($cas)->can('put')
+		or croak "Invalid CAS object: $cas"
+};
+
+sub BUILDARGS {
 	my $class= shift;
-	my %p= ref($_[0])? %{$_[0]} : @_;
-
-	croak "Missing required parameter 'store'"
-		unless defined $p{store};
-	croak "Invalid 'store' object"
-		unless ref($p{store}) && $p{store}->can('get');
-
-	# Create dircache if not given.
-	$p{dir_cache} ||= DataStore::CAS::FS::DirCache->new();
-
-	$p{hash_of_empty_dir}= $class->_calc_empty_dir_hash($p{store})
-		unless defined $p{hash_of_empty_dir};
-
-	# Root is a more flexible parameter than 'root_entry'.  If they specify
-	# it, we convert it to the equivalent root_entry parameter.
+	my %p= (@_ == 1 && ref $_[0] eq 'HASH')? %{$_[0]} : @_;
+	# Root is an alias for root_entry
 	if (defined $p{root}) {
 		defined $p{root_entry}
 			and croak "Specify only one of 'root' or 'root_entry'";
-
-		my $root= delete $p{root};
-		my $hash;
-
-		# Is it a scalar digest hash?
-		if (!ref $root) {
-			$hash= $root;
-		}
-		# Is is a DirEnt? or a hashref intended to be one?
-		elsif (ref $root eq 'HASH' or ref($root)->isa('DataStore::CAS::FS::DirEnt')) {
-			$p{root_entry}= $root;
-		}
-		# Is it a ::File or ::Dir object?
-		elsif (ref($root)->can('hash')) {
-			$hash= $root->hash;
-		}
-		else {
-			# Try stringifying it and looking it up in the CAS
-			$hash= "$root";
-		}
-		
-		if (defined $hash) {
-			$p{root_entry}= { type => 'dir', name => '', ref => $hash };
-		}
+		$p{root_entry}= delete $p{root};
 	}
+	return \%p;
+}
 
-	if (defined $p{root_entry}) {
-		if (ref $p{root_entry} eq 'HASH') {
-			$p{root_entry}= DataStore::CAS::FS::DirEnt->new({
+sub BUILD {
+	my ($self, $args)= @_;
+	my @invalid= grep { !$self->can($_) } keys %$args;
+	croak "Invalid param(s): ".join(', ', @invalid)
+		if @invalid;
+
+	croak "Missing/Invalid parameter 'dir_cache'"
+		unless defined $self->dir_cache and $self->dir_cache->can('clear');
+
+	# coerce root_entry to an actual DirEnt object
+	my $root= $self->root_entry;
+	defined $root
+		or croak "root_entry is required";
+	unless (ref $root && ref($root)->isa('DataStore::CAS::FS::DirEnt')) {
+		$self->_set_root_entry(
+			DataStore::CAS::FS::DirEnt->new({
 				type => 'dir',
 				name => '',
-				ref => $p{hash_of_empty_dir},
-				%{$p{root_entry}}
-			});
-		}
+				# Assume scalars are digest_hash values.
+				!ref $root? ( ref => $root )
+					# Hashrefs might be empty, to indicate an empty directory
+					: ref $root eq 'HASH'? ( ref => $self->hash_of_empty_dir, %$root )
+					# Is it a ::File or ::Dir object?
+					: ref($root)->can('hash')? ( ref => $root->hash )
+					# Else take a guess that it is a digest_hash wrapped in an object
+					: ( ref => "$root" )
+			})
+		);
 	}
-
-	$class->_ctor(\%p);
+	croak "Invalid parameter 'root_entry'"
+		unless ref $self->root_entry
+			and ref($self->root_entry)->can('type')
+			and $self->root_entry->type eq 'dir'
+			and defined $self->root_entry->ref;
+	# If they gave us a 'root_entry', make sure we can load it
+	$self->get_dir($self->root_entry->ref)
+		or croak "Unable to load root directory '".$self->root_entry->ref."'";
 }
 
 =head2 get( $hash [, \%flags ])
@@ -758,69 +759,6 @@ sub _commit_recursive {
 		if $node->{dir};
 	$format= 'universal' unless defined $format;
 	return DataStore::CAS::FS::DirCodec->store($self->store, $format, \@entries, {});
-}
-
-=head1 EXTENDING
-
-=head2 Constructor
-
-The constructor of DataStore::CAS::FS is slightly non-standard.  The method
-'new()' is in charge of all DWIM features, taking a wide range of parameters
-and coercing them into the strict requirements for the constructor.  It then
-passes these in a modifiable hashref to the private method '_ctor(\%params)'.
-
-_ctor(\%params) is the actual constructor.  It should remove all the
-parameters it knows about from the hashref, and then call the parent
-constructor.  It should then apply its extracted parameters to the $self
-object returned by the parent class.  This allows subclasses to change
-the arguments that the superclass sees, and to catch invalid arguments.
-
-=cut
-
-our @_ctor_params= qw: store volume_dir root_entry hash_of_empty_dir dir_cache :;
-sub _ctor_params { @_ctor_params }
-
-sub _ctor {
-	my ($class, $params)= @_;
-	my $p= { map { $_ => delete $params->{$_} } @_ctor_params };
-
-	# die on leftovers
-	croak "Invalid parameter: ".join(', ', keys %$params)
-		if (keys %$params);
-
-	croak "Missing/Invalid parameter 'store'"
-		unless defined $p->{store} and $p->{store}->can('get');
-
-	$p->{dir_cache} ||= DataStore::CAS::FS::DirCache->new();
-	croak "Missing/Invalid parameter 'dir_cache'"
-		unless defined $p->{dir_cache} and $p->{dir_cache}->can('clear');
-
-	$p->{hash_of_empty_dir}= $class->_calc_empty_dir_hash($p->{store})
-		unless defined $p->{hash_of_empty_dir};
-
-	croak "Constructor requires exactly one of volume_dir or root_entry"
-		unless 1 == grep { defined } @{$p}{'volume_dir','root_entry'};
-
-	if (defined $p->{volume_dir}) {
-		croak "Invalid parameter 'volume_dir'"
-			unless ref $p->{volume_dir}
-				and ref($p->{volume_dir})->can('get_entry');
-	}
-	elsif (defined $p->{root_entry}) {
-		croak "Invalid parameter 'root_entry'"
-			unless ref $p->{root_entry}
-				and ref($p->{root_entry})->can('type')
-				and $p->{root_entry}->type eq 'dir'
-				and defined $p->{root_entry}->ref;
-	}
-
-	my $self= bless $p, $class;
-
-	# If they gave us a 'root_entry', make sure we can load it
-	$self->get_dir($self->root_entry->ref)
-		or croak "Unable to load root directory '".$self->root_entry->ref."'";
-
-	return $self;
 }
 
 package DataStore::CAS::FS::Path;

@@ -1,29 +1,11 @@
 package DataStore::CAS::FS::Extractor;
 use 5.008;
-use strict;
-use warnings;
+use Moo;
 use Carp;
 
 use Unix::Mknod;
 use Fcntl ':mode';
 use POSIX;
-
-sub new {
-	my $class= shift;
-	my %p= ref($_[0])? %{$_[0]} : @_;
-	$class->_ctor(\%p);
-}
-
-our @_ctor_params= ();
-
-sub _ctor {
-	my ($class, $p)= @_;
-	my %self= map { $_ => delete $p->{$_} } @_ctor_params;
-	croak "Invalid param(s): ".join(', ', keys %$p)
-		if keys %$p;
-
-	bless \%self, $class;
-}
 
 sub extract {
 	my ($self, $cas, $entry, $dest_path)= @_;

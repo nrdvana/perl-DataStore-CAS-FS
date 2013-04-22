@@ -1,7 +1,6 @@
 package DataStore::CAS;
 use 5.008;
-use strict;
-use warnings;
+use Moo::Role;
 use Carp;
 use Try::Tiny;
 require Scalar::Util;
@@ -84,70 +83,15 @@ The digest hash of the empty string.  The cached result of
 
 =cut
 
-sub digest { $_[0]{digest} }
+requires 'digest';
 
-sub hash_of_null {
-	my $self= shift;
-	$self->{hash_of_null}= $self->put('', { dry_run => 1 }) unless defined $self->{hash_of_null};
-	$self->{hash_of_null};
+has hash_of_null => ( is => 'lazy' );
+
+sub _build_hash_of_null {
+	return $_[0]->put('', { dry_run => 1 });
 }
 
 =head1 METHODS
-
-=head2 new( %params | \%params | ?? )
-
-Convenience method for calling the inner constructor.  Takes any variety
-of parameters that makes sense to the module, and passes them to the _ctor()
-method as a sensible modifyable hashref.
-
-Note that if the user passes a hashref to new(), that hashref should be
-cloned so that modifications by _ctor() are not seen by the user.
-
-Standard parameters:
-
-=over 10
-
-=item digest
-
-For storage engines which can use a pluggable digest algorithm, this
-is the name of the algorithm, OR the name of a module implementing
-the digest API.  (This is typically passed to the Digest module's
-constructor).
-
-=back
-
-=cut
-
-sub new {
-	my $class= shift;
-	my %params= (scalar(@_) == 1 && ref($_[0]))? %{$_[0]} : @_;
-	$class->_ctor(\%params);
-}
-
-=head2 _ctor_params()
-
-Returns a *list* of parameters (hash keys) which the constructor accepts.
-Every subclass must implement this.
-
-=head2 _ctor( \%params )
-
-The internal constructor.  Takes exactly one parameter which must be a
-modifyable hashref whose keys are in the set of _ctor_params.
-
-=cut
-
-our @_ctor_params= qw: digest :;
-sub _ctor_params { @_ctor_params; }
-sub _ctor {
-	my ($class, $params)= @_;
-	my %p= map { $_ => delete $params->{$_} } @_ctor_params;
-	
-	# Check for invalid params
-	croak "Invalid parameter(s): ".join(', ', keys %$params)
-		if (keys %$params);
-	
-	return bless \%p, $class;
-}
 
 =head2 get( $digest_hash )
 
@@ -158,7 +102,7 @@ This method is pure-virtual and must be implemented in the subclass.
 
 =cut
 
-sub get { ... }
+requires 'get';
 
 =head2 put( $thing, [ \%flags ])
 
@@ -392,7 +336,7 @@ sub new_write_handle {
 }
 
 # This must be implemented by subclasses
-sub commit_write_handle { ... }
+requires 'commit_write_handle';
 
 =head2 validate( $digest_hash [, %flags ])
 
@@ -474,7 +418,7 @@ you're searching the whole CAS, and not just commit entries.
 
 =cut
 
-sub iterator { my ($flags)= @_; ... }
+requires 'iterator';
 
 =head2 open_file( $file [, \%flags ])
 
@@ -496,7 +440,7 @@ are 'raw' by default.
 
 =cut
 
-sub open_file { my ($file, $flags)= @_; ... }
+requires 'open_file';
 
 # File and Handle objects have DESTROY methods that call these
 sub _file_destroy {}

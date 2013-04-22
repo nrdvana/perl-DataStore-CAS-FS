@@ -1,28 +1,16 @@
 package DataStore::CAS::Virtual;
 use 5.008;
-use strict;
-use warnings;
+use Moo;
 use Carp;
 use Try::Tiny;
 use Digest;
 
-use parent 'DataStore::CAS';
-
 our $VERSION= '0.0100';
 
-our @_ctor_params= qw: entries :;
-sub _ctor_params { @_ctor_params, $_[0]->SUPER::_ctor_params; }
+has digest  => ( is => 'ro', default => sub { 'SHA-1' } );
+has entries => ( is => 'rw', default => sub { {} } );
 
-sub _ctor {
-	my ($class, $params)= @_;
-	my %p= map { $_ => delete $params->{$_} } @_ctor_params;
-	$params->{digest} ||= 'SHA-1';
-	my $self= $class->SUPER::_ctor($params);
-	$self->{entries}= $p{entries} || {};
-	return $self;
-}
-
-sub entries { $_[0]{entries} ||= {} }
+with 'DataStore::CAS';
 
 sub get {
 	my ($self, $hash)= @_;
@@ -81,6 +69,12 @@ sub open_file {
 	open(my $fh, '<', \$self->entries->{$file->hash})
 		or die "open: $!";
 	return $fh;
+}
+
+sub iterator {
+	my $self= shift;
+	my @entries= sort keys %{$self->entries};
+	sub { shift @entries };
 }
 
 1;
