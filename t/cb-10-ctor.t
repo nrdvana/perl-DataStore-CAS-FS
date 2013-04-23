@@ -4,7 +4,7 @@ use Test::More;
 use Try::Tiny;
 use Data::Dumper;
 use Path::Class;
-use Carp::Always;
+try { require Carp::Always; };
 use JSON;
 use File::Spec;
 use Storable 'dclone';

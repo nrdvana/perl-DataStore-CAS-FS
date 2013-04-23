@@ -1,11 +1,15 @@
 package App::Casbak::Cmd::Import;
 use Moo;
-extends 'App::Casbak::Cmd';
 use Try::Tiny;
 
-sub short_description {
-	"Import files from filesystem to virtual path in backup"
-}
+extends 'App::Casbak::Cmd';
+
+__PACKAGE__->register_command(
+	command => 'import',
+	class => __PACKAGE__,
+	description => "Import files from filesystem to virtual path in backup",
+	pod => __FILE__
+);
 
 # Array of source=>dest pairs to process
 has paths => ( is => 'rw', default => sub { [] } );
@@ -17,34 +21,38 @@ has compare_meta_only => ( is => 'rw' );
 # Set of arbitrary metadata to attach to snapshot
 has snapshot_meta     => ( is => 'rw', default => sub { {} } );
 
-sub apply_args {
-	my ($self, @args)= @_;
-	
+sub parse_argv {
+	my ($class, $argv, $p)= @_;
+	goto \&App::Casbak::Cmd::parse_argv
+		unless defined $p;
+
 	require Getopt::Long;
 	Getopt::Long::Configure(qw: no_ignore_case bundling permute :);
-	Getopt::Long::GetOptionsFromArray(\@args,
-		$self->_base_getopt_config,
-		'quick'       => sub { $self->compare_meta_only(1) },
-		'<>'          => sub { $self->add_path("$_[0]") },
-		'as=s'        => sub { $self->set_virtual_path("$_[1]") },
-		'comment|m=s' => sub { $self->snapshot_meta->{comment}= "$_[1]" },
+	Getopt::Long::GetOptionsFromArray($argv,
+		'quick'       => sub { $p->{compare_meta_only}= 1 },
+		'<>'          => sub { _add_path($p, "$_[0]") },
+		'as=s'        => sub { _set_virtual_path($p, "$_[1]") },
+		'comment|m=s' => sub { $p->{snapshot_meta}{comment}= "$_[1]" },
 		) or die "\n";
+	return ($class, $p);
 }
 
-sub add_path {
-	my ($self, $path)= @_;
-	push @{$self->paths}, { real => $path, virt => $path };
+sub _add_path {
+	my ($params, $path)= @_;
+	push @{ $params->{paths} ||= [] }, { real => $path, virt => $path };
 }
 
-sub set_virtual_path {
-	my ($self, $virt)= @_;
-	die "No preceeding path for '--as'\n"
-		unless scalar @{$self->paths};
-	$self->paths->[-1]{virt}= $virt;
+sub _set_virtual_path {
+	my ($params, $virt)= @_;
+	die __PACKAGE__->syntax_error("No preceeding path for '--as'")
+		unless @{$params->{paths}} > 0;
+	$params->{paths}[-1]{virt}= $virt;
 }
 
 sub run {
 	my $self= shift;
+	return $self->SUPER::run()
+		if $self->want_version || $self->want_help;
 	
 	unless (scalar $self->path_list) {
 		my $msg= "No paths specified.  Nothing to do\n";
@@ -55,6 +63,8 @@ sub run {
 	
 	# Create instance of Casbak
 	my $casbak= App::Casbak->new($self->casbak_args);
+	-f $casbak->config_filename
+		or die "Directory \"".$casbak->backup_dir."\" does not appear to be a casbak archive\n";
 	
 	# Start from current snapshot.
 	# (It could be undef, which means we're starting from scratch)
@@ -80,21 +90,13 @@ sub run {
 		$new_ent->{ref}= $digest_hash;
 		$fs->set_path($path_spec->{virt}, $new_ent, { force_create => 1 });
 	}
-	p($fs->_path_overrides);
 
 	# TODO: Fill in interesting metadata about this backup (duration, num files, size increase, etc)
 	
 	# Save this new root as a snapshot
 	$fs->commit();
 	$casbak->save_snapshot($fs->root_entry, $self->snapshot_meta);
-	1;
-}
-
-sub get_pod {
-	open(my $f, '<', __FILE__)
-		or die "Unable to read script (".__FILE__.") to extract help text: $!\n";
-	local $/= undef;
-	return scalar <$f>;
+	'success';
 }
 
 1;

@@ -454,8 +454,9 @@ sub init {
 	my $dir= defined $ctor_args->{backup_dir}? $ctor_args->{backup_dir} : ($ctor_args->{backup_dir}= '.');
 	
 	# Directory must exist and be empty
+	-d $dir || mkdir $dir || die "Can't create directory \"$dir\"";
 	my @entries= grep { $_ ne '.' && $_ ne '..' } <$dir/*>;
-	-d $dir && -r $dir && -w $dir && -x $dir && 0 == @entries
+	-r $dir && -w $dir && -x $dir && 0 == @entries
 		or die "Backups may only be initialized in an empty writeable directory\n";
 
 	# Record our own version in the config

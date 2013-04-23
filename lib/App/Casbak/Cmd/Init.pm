@@ -55,7 +55,7 @@ sub run {
 	$cfg->{date_format}= $self->_build_module_args($self->user_config->{extractor}, 'DateTime::Format::Natural');
 
 	App::Casbak->init($self->casbak_args);
-	1;
+	'success';
 }
 
 sub _build_module_args {
@@ -93,7 +93,7 @@ sub _apply {
 sub _apply_nameval {
 	my ($config, $str)= @_;
 	($str =~ /^([A-Za-z_][A-Za-z0-9_.]*)=(.*)/)
-		or die __PACKAGE__->syntax_errpr("Invalid name=value pair: '$str'");
+		or die __PACKAGE__->syntax_error("Invalid name=value pair: '$str'");
 	_apply('config', $1, $2);
 }
 

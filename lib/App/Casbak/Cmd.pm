@@ -180,7 +180,7 @@ sub get_pod_source {
 	};
 	
 	# And substitute the $commandsPod into the COMMANDS section
-	($source =~ s/\n=head1 COMMANDS.*=head1/\n=head1 COMMANDS\n\n$commandsPod\n=head1/s )
+	($source =~ s/\n=head1 COMMANDS.*?=head1/\n=head1 COMMANDS\n\n$commandsPod\n=head1/s )
 		or warn "Internal error: failed to substitute command listing into help text.";
 	
 	# Return it as a filehandle
@@ -192,7 +192,7 @@ sub syntax_error {
 	my ($class, $msg)= @_;
 	$msg= { message => $msg, pod_source => $class->get_pod_source }
 		unless ref $msg;
-	return App::Casbak::Cmd::SyntaxError($msg);
+	return App::Casbak::Cmd::SyntaxError->new($msg);
 }
 
 package App::Casbak::Cmd::SyntaxError;
@@ -206,7 +206,7 @@ __END__
 
 =head1 NAME
 
-casbak - backup tool using File::CAS
+casbak - backup tool built around DataStore::CAS::FS library
 
 =head1 SYNOPSIS
 
@@ -251,7 +251,7 @@ Disable output messages, and can be specified multiple times to disable
 
 =item --version
 
-Print the version of casbak (the utility) and File::CAS (the perl module) and exit.
+Print the version of casbak (the utility) and DataStore::CAS::FS (the perl module) and exit.
 
 =item -?
 
@@ -292,9 +292,10 @@ Print this help, or help for the sub-command.
 Some care should be taken regarding the permissions of the backup directory.
 Casbak uses a plugin-heavy design.  If an attacker were able to modify the
 configuration file in the backup directory, they could cause arbitrary perl
-modules to be loaded.  If the attacker also had control of a directory in
-perl's library path (or the environment variables of the backup script),
-they would be able to execute arbitrary code as the user running casbak.
+modules (in perl's library path) to be loaded.  If the attacker also had
+control of a directory in perl's library path (or the environment variables
+of the backup script), they would be able to execute arbitrary code as the
+user running casbak.
 There may also be other exploits possible by modifying the backup config
 file.  Ensure that only highly priveleged users have access to the backup
 directory.

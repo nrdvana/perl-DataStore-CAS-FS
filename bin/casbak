@@ -29,7 +29,7 @@ my %StatusCodes= (
 
 my $cmd;
 try {
-	my ($cmdclass, $params)= App::Casbak::Cmd->parse_argv(@ARGV);
+	my ($cmdclass, $params)= App::Casbak::Cmd->parse_argv(\@ARGV);
 	my $cmd= $cmdclass->new($params);
 
 	# App::Casbak has globally-defined logging functions, and we enable/disable them
@@ -44,7 +44,7 @@ try {
 		unless defined $StatusCodes{$status};
 	
 	$status= 'success'
-		if $status == 'no-op' && $cmd->allow_no_op;
+		if $status eq 'no-op' && $cmd->allow_no_op;
 
 	exit $StatusCodes{$status};
 }
