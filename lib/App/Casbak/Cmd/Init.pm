@@ -1,17 +1,49 @@
 package App::Casbak::Cmd::Init;
 use Moo;
-extends 'App::Casbak::Cmd';
 use Try::Tiny;
 use Module::Runtime 'require_module', 'is_module_name';
 
+extends 'App::Casbak::Cmd';
+
 has user_config => ( is => 'rw', default => sub {+{}} );
 
-sub short_description {
-	"Initialize a new backup directory"
+__PACKAGE__->register_command(
+	command     => 'init',
+	class       => __PACKAGE__,
+	description => "Initialize a new backup directory",
+	pod         => __FILE__
+);
+
+sub parse_argv {
+	my ($class, $argv, $p)= @_;
+	goto \&App::Casbak::Cmd::parse_argv
+		unless defined $p;
+	my $config= ($p->{user_config} ||= {});
+	Getopt::Long::Configure(qw: no_ignore_case bundling permute :);
+	Getopt::Long::GetOptionsFromArray($argv,
+		'storage-engine|s=s' => sub { _apply_cas($config, "$_[1]") },
+		'dir-type|d=s'       => sub { _apply_dirtype($config, "$_[1]") },
+		'digest=s'           => sub { _apply_digest($config, "$_[1]") },
+		'<>'                 => sub { _apply_nameval($config, "$_[0]") }
+		) or die $class->syntax_error('');
+	return ($class, $p);
+}
+
+sub BUILD {
+	my ($self, $args)= @_;
+
+	# Check required settings
+	defined $self->user_config->{cas}{CLASS} and length $self->user_config->{cas}{CLASS}
+		or die "Storage engine (-s, or cas.CLASS) is required\n";
+
+	# apply defaults
 }
 
 sub run {
 	my $self= shift;
+	return $self->SUPER::run()
+		if $self->want_version || $self->want_help;
+
 	my $cfg= ($self->casbak_args->{config} ||= {});
 
 	$cfg->{cas}= $self->_build_module_args($self->user_config->{cas});
@@ -23,6 +55,7 @@ sub run {
 	$cfg->{date_format}= $self->_build_module_args($self->user_config->{extractor}, 'DateTime::Format::Natural');
 
 	App::Casbak->init($self->casbak_args);
+	1;
 }
 
 sub _build_module_args {
@@ -38,34 +71,11 @@ sub _build_module_args {
 	return [ $class, $version, (keys %$cfg? $cfg : ()) ];
 }
 
-sub apply_args {
-	my ($self, @args)= @_;
-	
-	require Getopt::Long;
-	Getopt::Long::Configure(qw: no_ignore_case bundling permute :);
-	Getopt::Long::GetOptionsFromArray(\@args,
-		$self->_base_getopt_config,
-		'storage-engine|s=s' => sub { $self->apply_cas("$_[1]") },
-		'dir-type|d=s'       => sub { $self->apply_dirtype("$_[1]") },
-		'digest=s'           => sub { $self->apply_digest("$_[1]") },
-		) or die "\n";
-
-	for my $arg (@args) {
-		($arg =~ /^([A-Za-z_][A-Za-z0-9_.]*)=(.*)/)
-			or die "Invalid name=value pair: '$arg'\n";
-		
-		$self->apply($1, $2);
-	}
-
-	defined $self->user_config->{cas}{CLASS} and length $self->user_config->{cas}{CLASS}
-		or die "Storage engine (-s, or cas.CLASS) is required\n";
-}
-
-sub apply {
-	my ($self, $path, $value)= @_;
+sub _apply {
+	my ($config, $path, $value)= @_;
 	$path= [ split /\./, $path ] unless ref $path;
 	
-	my $node= $self->user_config;
+	my $node= $config;
 	for (my $i= 0; $i < $#$path; $i++) {
 		my $field= $path->[$i];
 		$node->{$field} ||= {};
@@ -80,43 +90,43 @@ sub apply {
 	$node->{$path->[-1]}= $value;
 }
 
+sub _apply_nameval {
+	my ($config, $str)= @_;
+	($str =~ /^([A-Za-z_][A-Za-z0-9_.]*)=(.*)/)
+		or die __PACKAGE__->syntax_errpr("Invalid name=value pair: '$str'");
+	_apply('config', $1, $2);
+}
+
 our %_store_aliases= (
 	simple  => { CLASS => 'DataStore::CAS::Simple', path => 'store' },
 );
-sub apply_cas {
-	my ($self, $spec)= @_;
+sub _apply_cas {
+	my ($config, $spec)= @_;
 	
 	if (my $opts= $_store_aliases{lc $spec}) {
-		$self->apply("cas.$_" => $opts->{$_})
+		_apply($config, "cas.$_" => $opts->{$_})
 			for keys %$opts;
 	} else {
 		is_module_name($spec) or die "Invalid store spec '$spec'\n";
-		$self->apply('cas.CLASS' => $spec);
+		_apply($config, 'cas.CLASS' => $spec);
 	}
 }
 
 our %_dir_types= ( map { $_ => 1 } qw: universal minimal unix : );
-sub apply_dirtype {
-	my ($self, $spec)= @_;
+sub _apply_dirtype {
+	my ($config, $spec)= @_;
 
 	if (my $opt= $_dir_types{lc $spec}) {
-		$self->apply('scanner.dir_format' => $opt);
+		_apply($config, 'scanner.dir_format' => $opt);
 	} else {
 		is_module_name($spec) or die "Invalid dirtype argument '$spec'\n";
-		$self->apply('scanner.dir_format' => $spec);
+		_apply($config, 'scanner.dir_format' => $spec);
 	}
 }
 
-sub apply_digest {
-	my ($self, $digest)= @_;
-	$self->apply('cas.digest' => $digest);
-}
-
-sub get_pod {
-	open(my $f, '<', __FILE__)
-		or die "Unable to read script (".__FILE__.") to extract help text: $!\n";
-	local $/= undef;
-	return scalar <$f>;
+sub _apply_digest {
+	my ($config, $digest)= @_;
+	_apply($config, 'cas.digest' => $digest);
 }
 
 1;

@@ -3,11 +3,13 @@ use Moo;
 use Try::Tiny;
 use Carp;
 use Module::Runtime;
+use App::Casbak;
 
-has want_version => ( is => 'rw' );
-has want_help    => ( is => 'rw' );
-has verbosity    => ( is => 'rw', default => sub { 0 } );
-has allow_no_op  => ( is => 'rw' );
+has want_version  => ( is => 'rw' );
+has want_help     => ( is => 'rw' );
+has verbosity     => ( is => 'rw', default => sub { 0 } );
+has allow_no_op   => ( is => 'rw' );
+
 has casbak_args  => ( is => 'rw', default => sub { +{backup_dir => '.'} } );
 
 sub backup_dir {
@@ -16,17 +18,63 @@ sub backup_dir {
 	$args->{backup_dir}
 }
 
+sub parse_argv {
+	my ($class, $argv, $p)= @_;
+	$p ||= { };
+	require Getopt::Long;
+	Getopt::Long::Configure(qw: no_ignore_case bundling require_order :);
+	Getopt::Long::GetOptionsFromArray(
+		$argv,
+		'version|V'      => sub { $p->{want_version}= "$_[1]" },
+		'help|?'         => sub { $p->{want_help}= "$_[1]" },
+		'allow-noop'     => sub { $p->{allow_no_op}= "$_[1]" },
+		'verbose|v'      => sub { $p->{verbosity}++ },
+		'quiet|q'        => sub { $p->{verbosity}-- },
+		'casbak-dir|D=s' => sub { $p->{casbak_args}{backup_dir}= "$_[1]" },
+	) or die $class->syntax_error('');
+	if (@$argv) {
+		my $cmd_name= shift @$argv;
+		my $cmd_class= $class->load_subcommand($cmd_name)
+			or die $class->syntax_error("No such command \"$cmd_name\"");
+		my $cmd_parse= $cmd_class->can('parse_argv');
+		croak "parse_argv not implemented in $cmd_class"
+			unless defined $cmd_parse && $cmd_parse ne \&parse_argv;
+		return $cmd_class->parse_argv($argv, $p);
+	}
+	return ($class, $p);
+}
+
+our %_Commands;
+our %_CommandByPackage;
+
+sub register_command {
+	my $class= shift;
+	my %info= (@_ == 1 && ref $_[0] eq 'HASH')? %{$_[0]} : @_;
+	defined $info{$_} or croak "$_ is required"
+		for qw( command class description pod );
+	$_Commands{$info{command}}= \%info;
+	$_CommandByPackage{$info{class}}= \%info;
+}
+
 # Load a package for a casbak command (like 'ls', 'init', etc)
 # Returns package name on success, false on nonexistent, and throws
 # an exception if the package exists but fails to load.
 sub load_subcommand {
 	my ($class, $cmdName)= @_;
 	
+	# Do we already have it?
+	return $_Commands{$cmdName}{class}
+		if defined $_Commands{$cmdName};
+	
+	# Else guess the module name and try to load it
+	
 	# Convert underscore and hyphen to CamelCase
 	my $submodule= join '', map { uc(substr($_,0,1)) . lc(substr($_,1)) } split /[-_]+/, $cmdName;
+	# Convert dot to underscore
+	$submodule =~ tr/./_/;
 	# Is it a legal sub-package name?
-	($submodule =~ /^[A-Za-z]+$/)
-		or return 0;
+	($submodule =~ /^[A-Za-z_]+$/)
+		or return '';
 	
 	my $pkg= 'App::Casbak::Cmd::' . $submodule;
 	my $err;
@@ -39,19 +87,14 @@ sub load_subcommand {
 	
 	if (defined $err) {
 		# Try to distinguish between module errors and nonexistent modules.
-		my $commands= $class->find_all_subcommands();
+		my $packages= $class->find_all_subcommands();
 		return ''
-			unless grep { $_ eq $pkg } @$commands;
+			unless grep { $_ eq $pkg } @$packages;
 		# looks like a bug in the package.
 		die $err;
 	}
 
-	# Make sure the package implemented the required methods
-	for my $mth (qw: short_description apply_args run get_pod :) {
-		die "Missing required method '$mth' in $pkg\n"
-			if !$pkg->can($mth) or $pkg->can($mth) eq __PACKAGE__->can($mth);
-	}
-	return $pkg;
+	return defined $_Commands{$cmdName}? $_Commands{$cmdName}{class} : '';
 }
 
 sub find_all_subcommands {
@@ -68,84 +111,64 @@ sub find_all_subcommands {
 	[ keys %pkgSet ]
 }
 
-sub apply_args {
-	my ($self, @args)= @_;
-	
-	# Iterate through options til the first non-option, which must be a sub-command name
-	# (unless --help or --version was requested)
-	require Getopt::Long;
-	Getopt::Long::Configure(qw: no_ignore_case bundling require_order :);
-	Getopt::Long::GetOptionsFromArray(\@args, $self->_base_getopt_config )
-		or die "\n";
+sub load_all_subcommands {
+	my $class= shift;
+	my $packages= $class->find_all_subcommands();
+	for my $pkg (@$packages) {
+		try {
+			Module::Runtime::require_module($pkg);
+		};
+	}
+}
 
-	# Now, figure out which subcommand to become
-	if (@args) {
-		my $cmd= shift @args;
-		my $cmdClass= $self->load_subcommand($cmd)
-			or die "No such command \"$cmd\"\n";
-		
-		my $newself= $cmdClass->new(%$self);
-		$newself->can('apply_args') eq \&apply_args
-			and die "Package '$cmdClass' did not implement 'apply_args'\n";
-		%$self= %$newself;
-		bless $self, ref $newself;
-		bless $newself, '#Nonexistent'; # prevent destructors from running
-		$self->apply_args(@args);
-	}
-	else {
-		die "No command specified\n"
-			unless $self->want_version or $self->want_help or $self->allow_no_op;
-	}
+sub BUILD {
 }
 
 sub run {
-	croak "Subcommand required";
-}
-
-sub _base_getopt_config {
 	my $self= shift;
-	return
-		'version|V'      => sub { $self->want_version(1) },
-		'help|?'         => sub { $self->want_help(1) },
-		'allow-noop'     => sub { $self->allow_no_op(1) },
-		'verbose|v'      => sub { $self->verbosity($self->verbosity+1) },
-		'quiet|q'        => sub { $self->verbosity($self->verbosity-1) },
-		'casbak-dir|D=s' => sub { $self->backup_dir($_[1]) },
-	;
+
+	# They specified '--version'. Print it and exit.
+	if ($self->want_version) {
+		print App::Casbak->VersionMessage();
+		return 'no-op';
+	}
+
+	# They specified '--help'.  Print the full POD and exit.
+	if ($self->want_help) {
+		require Pod::Usage;
+		Pod::Usage::pod2usage(-verbose => 2, -input => $self->get_pod_source, -exitval => 'noexit');
+		return 'no-op';
+	}
+
+	die $self->syntax_error("Sub-command required")
+		unless $self->allow_no_op;
+	'no-op';
 }
 
-sub short_description {
-	"(unimplemented)"
-}
-
-sub get_pod {
-	my $self= shift;
+sub get_pod_source {
+	my $class= shift;
+	$class= ref $class if ref $class;
+	if ($class ne __PACKAGE__ && defined $_CommandByPackage{$class}) {
+		my $pod= $_CommandByPackage{$class}{pod};
+		$pod= $pod->()
+			if ref $pod && ref $pod eq 'CODE';
+		return $pod;
+	}
 	
 	# First, use dynamic module loading to find all the command classes
-	my $commands= $self->find_all_subcommands();
-
-	# Try loading them all, but handle errors gracefully
-	foreach my $pkg (@$commands) {
-		try { Module::Runtime::require_module($pkg); };
-	}
+	$class->load_all_subcommands();
 
 	# Now, format each command using POD notation, to make the body of the COMMANDS section.
 	my $commandsPod=
 		"=over 12\n"
-		."\n";
-
-	for my $pkg (sort @$commands) {
-		my ($cmd)= ($pkg =~ /([^:]+)$/);
-
-		$commandsPod .=
-			"=item ".lc($cmd)."\n"
+		."\n"
+		.join('', map {
+			my ($pkg, $cmd)= ($_, $_ =~ /([^:]*)$/);
+			"=item $_->{command}\n"
 			."\n"
-			.(try { $pkg->short_description } catch { "(error loading module $pkg)" })."\n"
+			."$_->{description}\n"
 			."\n"
-	}
-	
-	$commandsPod .=
-		"\n"
+		} sort { $a->{command} cmp $b->{command} } values %_Commands)
 		."=back\n";
 
 	# Now read the source of this file
@@ -160,8 +183,23 @@ sub get_pod {
 	($source =~ s/\n=head1 COMMANDS.*=head1/\n=head1 COMMANDS\n\n$commandsPod\n=head1/s )
 		or warn "Internal error: failed to substitute command listing into help text.";
 	
-	return $source;
+	# Return it as a filehandle
+	open my $f, '<', \$source or die "open(STRING): $!";
+	return $f;
 }
+
+sub syntax_error {
+	my ($class, $msg)= @_;
+	$msg= { message => $msg, pod_source => $class->get_pod_source }
+		unless ref $msg;
+	return App::Casbak::Cmd::SyntaxError($msg);
+}
+
+package App::Casbak::Cmd::SyntaxError;
+use Moo;
+
+has message    => ( is => 'rw', required => 1 );
+has pod_source => ( is => 'rw', required => 1 );
 
 1;
 __END__
