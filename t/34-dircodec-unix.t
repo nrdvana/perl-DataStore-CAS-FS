@@ -82,11 +82,11 @@ subtest many_dirent => sub {
 subtest unicode => sub {
 	my @entries= (
 		{ type => 'file', name => "\xC4\x80\xC5\x90", size => '100000000000000000000000000', ref => '0000' },
-		{ type => 'file', name => "\x80", size => '1', ref => undef },
+		{ type => 'file', name => DataStore::CAS::FS::NonUnicode->new("\x80"), size => '1', ref => "\x{C4}\x{80}" },
 	);
 	my @expected= (
-		{ type => 'file', name => "\x80", size => 1 },
-		{ type => 'file', name => "\xC4\x80\xC5\x90", ref => '0000', size => '100000000000000000000000000' },
+		{ type => 'file', name => DataStore::CAS::FS::NonUnicode->new("\x80"), size => '1', ref => "\x{C4}\x{80}" },
+		{ type => 'file', name => "\xC4\x80\xC5\x90", size => '100000000000000000000000000', ref => '0000' },
 	);
 	my %metadata= (
 		"\x{AC00}" => "\x{0C80}"
@@ -100,7 +100,8 @@ subtest unicode => sub {
 	is_deeply( $dir->metadata, \%metadata, 'deserialized metadata are correct' )
 		or diag Dumper($dir->metadata);
 	is_deeply( [ map { $_->as_hash } @{$dir->{_entries}} ], \@expected, 'deserialized entries are correct' )
-		or diag Dumper($dir->{_entries});
+		or do { use DDP; p($dir->{_entries}); };
+	is( ref $dir->{_entries}[0]->name, 'DataStore::CAS::FS::NonUnicode' );
 	done_testing;
 };
 

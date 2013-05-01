@@ -1,11 +1,13 @@
 package DataStore::CAS::FS::DirCodec::Universal;
-use 5.008;
+use 5.0080001;
 use strict;
 use warnings;
-use parent 'DataStore::CAS::FS::DirCodec';
 use Carp;
 use Try::Tiny;
-require JSON;
+use JSON 2.53 ();
+
+use parent 'DataStore::CAS::FS::DirCodec';
+
 require DataStore::CAS::FS::NonUnicode;
 require DataStore::CAS::FS::DirEnt;
 
@@ -13,10 +15,7 @@ our $VERSION= 1.0000;
 
 __PACKAGE__->register_format( universal => __PACKAGE__ );
 
-=head1 NAME
-
-DataStore::CAS::FS::DirCodec::Universal - Codec for saving all arbitrary
-metadata about a file.
+# ABSTRACT: Codec for saving all arbitrary fields of a DirEnt
 
 =head1 SYNOPSIS
 
@@ -34,12 +33,12 @@ metadata about a file.
 
 This codec can store any arbitrary metadata about a file.  It uses JSON for
 its encoding, so other languages/platforms should be able to easily interface
-with the files this codec writes.  ... except for Unicode.
+with the files this codec writes ... except for Unicode caveats.
 
 =head2 Unicode
 
-JSON requires that all data be encoded in Unicode.  Some filenames might be
-a sequence of bytes which are not valid Unicode strings.  While the high-ascii
+JSON requires that all data be proper Unicode, and some filenames might be
+a sequence of bytes which is not a valid Unicode string.  While the high-ascii
 bytes of these filenames could be encoded as unicode code-points, this would
 create an ambiguity with the names that actually were Unicode.  Instead, I
 wrap values which are intended to be a string of octets in an instance of
@@ -47,25 +46,39 @@ L<DataStore::CAS::Dir::NonUnicode>, which gets written into JSON as
 
   C<{ "*NonUnicode*": $bytes_as_codepoints }>
 
-The 'ref' attribute of DirEnt is also encoded this way.  Any attribute
-has the potential to be encoded this way depending on whether the Scanner
-(which read it from the filesystem) decided to wrap it in a NonUnicode object.
+Any attribute which contains bytes >= 0x80 and which does not have Perl's
+unicode flag set will be encoded this way, so that it comes back as it went in.
+
+However, since filenames are intended to be human-readable, they are decoded as
+unicode strings when appropriate, even if they arrived as octets which just
+happened to be valid UTF-8.
 
 =head1 METHODS
 
-=head2 $class->encode( \@entries, \%metadata )
+=head2 encode
+
+  my $serialized= $class->encode( \@entries, \%metadata )
 
 Serialize the given entries into a scalar.
 
-This serializes them in File::CAS::Dir format, which uses JSON and isn't
-too efficient.  The benefit is that it will store *any* keys you add to the
-directory entry, and restore them to the same Perl data structure you had
-before.  (excluding blessings and ties and etc)
+@entries is an array of DirEnt objects or hashrefs mimicing them.
 
-If you add anything to the metadata, beware that it must be encoded in
-a consistent manner, or future serializations of the same directory might
-not come out to the same checksum.  (which would waste disk space, but
-otherwise doesn't break anything)
+%metadata is a hash of arbitrary metadata which you want saved along with the
+directory.
+
+This "Universal" DirCodec serializes the data as a short one-line header
+followed by a string of JSON. JSON isn't the most efficient format around,
+but it has wide cross-platform support, and can store any arbitrary DirEnt
+attributes that you might have, and even structure within them.
+
+The serialization contains newlines in a manner that should make it convenient
+to write custom processing code to inspect the contents of the directory
+without decoding the whole thing with a JSON library.
+
+If you add anything to the metadata, try to keep the data consistent so that
+two encodings of the same directory are identical.  Otherwise, (in say, a
+backup utility) you will waste disk space storing multiple copies of the same
+directory.
 
 =cut
 
@@ -79,10 +92,6 @@ sub encode {
 			my %entry= %{ref $_ eq 'HASH'? $_ : $_->as_hash};
 			defined $entry{name} or croak "Can't serialize nameless directory entry: ".encode_json(\%entry);
 			defined $entry{type} or croak "Can't serialize typeless directory entry: ".encode_json(\%entry);
-			# Convert all name strings down to plain bytes, for our sort
-			# (they should be already)
-			utf8::encode($entry{name})
-				if !ref $entry{name} and utf8::is_utf8($entry{name});
 			\%entry;
 		} @$entry_list;
 
@@ -92,26 +101,26 @@ sub encode {
 		."{\"metadata\":$json,\n"
 		." \"entries\":[\n";
 	for (@entries) {
-		# The name field is plain bytes, and *might* not be valid UTF-8.
-		# JSON module will force it to be UTF-8 (or encode the high-ascii
-		# bytes as codepoints, which would be confusing later)
-		# We test for that case, and wrap it in a NonUnicode which gets
-		# specially serialized into JSON.
-		if (!utf8::is_utf8($_->{name}) and !utf8::decode($_->{name})) {
-			$_->{name}= DataStore::CAS::FS::NonUnicode->new($_->{name});
-		}
-		# ref should also be treated as octets.
-		if (!utf8::is_utf8($_->{ref}) and !utf8::decode($_->{ref})) {
-			$_->{ref}= DataStore::CAS::FS::NonUnicode->new($_->{ref});
-		}
-		# Any other field with high bytes without the unicode flag should be
-		# wrapped by the thing that writes it.
+		# If any of our fields are a byte string that is not valid unicode,
+		# We wrap them with "NonUnicode" objects.
+		#_preserve_octets({}) for values %$_;
 		$ret .= $enc->encode($_).",\n"
 	}
 
 	# remove trailing comma
 	substr($ret, -2)= "\n" if @entries;
 	return $ret."]}";
+}
+sub _preserve_octets {
+	my $r= ref $_;
+	if (!$r) {
+		$_= DataStore::CAS::FS::NonUnicode->new($_)
+			if !utf8::is_utf8($_) && !utf8::decode($_);
+	} else {
+		croak "Recursion within DirEnt data" if $_[0]{refaddr($_)}++;
+		if ($r eq 'HASH') { &_preserve_octets for values %$_ }
+		elsif ($r eq 'ARRAY') { &_preserve_octets for @$_ }
+	}
 }
 
 =head2 $class->decode( \%params )
@@ -149,22 +158,15 @@ sub decode {
 		$bytes= <$handle>;
 	}
 
-	my $enc= JSON->new()->utf8->canonical->convert_blessed;
-	DataStore::CAS::FS::NonUnicode->add_json_filter($enc);
-	my $data= $enc->decode($bytes);
+	my $dec= JSON->new()->utf8->canonical->convert_blessed;
+	DataStore::CAS::FS::NonUnicode->add_json_filter($dec, 1);
+	my $data= $dec->decode($bytes);
 	defined $data->{metadata} && ref($data->{metadata}) eq 'HASH'
 		or croak "Directory data is missing 'metadata'";
 	defined $data->{entries} && ref($data->{entries}) eq 'ARRAY'
 		or croak "Directory data is missing 'entries'";
 	my @entries;
 	for my $ent (@{$data->{entries}}) {
-		# While name and ref are probably logically unicode, we want them
-		#  kept as octets for compatibility reasons.
-		utf8::encode($ent->{name})
-			if !ref $ent->{name} and utf8::is_utf8($ent->{name});
-		utf8::encode($ent->{ref})
-			if !ref $ent->{ref}  and utf8::is_utf8($ent->{ref});
-
 		push @entries, DataStore::CAS::FS::DirEnt->new($ent);
 	};
 	return DataStore::CAS::FS::Dir->new(

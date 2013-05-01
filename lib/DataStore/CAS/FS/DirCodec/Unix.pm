@@ -43,7 +43,17 @@ sub encode {
 		my $code= $_TypeToCode{$e->{type}}
 			or croak "Unknown directory entry type: ".$e->{type};
 		my $name= $e->{name};
-		my $ref= defined $e->{ref}? $e->{ref} : '';
+		my $ref= $e->{ref};
+
+		!defined $name? croak "Missing required attribute 'name'"
+			: !ref $name? utf8::encode($name)
+			: ref($name)->can('is_non_unicode')? ($name= "$name")
+			: croak "'name' must be a scalar or a NonUnicode instance";
+
+		!defined $ref? ($ref= '')
+			: !ref $ref? utf8::encode($ref)
+			: ref($ref)->can('is_non_unicode')? ($ref= "$ref")
+			: croak "'ref' must be a scalar or a NonUnicode instance";
 
 		$umap{$e->{unix_uid}}= $e->{unix_user}
 			if defined $e->{unix_uid} && defined $e->{unix_user};
@@ -57,10 +67,8 @@ sub encode {
 		# As an optimization, all undef trailing fields can be chopped off.
 		$int_attr_str =~ s/:+$//;
 		
-		utf8::encode($name) if utf8::is_utf8($name);
-		utf8::encode($ref)  if utf8::is_utf8($ref);
-		croak "Name too long: '$name'" if length($name) > 255;
-		croak "Value too long: '$ref'" if length($ref) > 255;
+		croak "'name' too long: '$name'" if length($name) > 255;
+		croak "'ref' too long: '$ref'" if length($ref) > 255;
 		croak "Unix fields too long: '$int_attr_str'" if length($int_attr_str) > 255;
 		pack('CCCC', length($name), length($ref), length($int_attr_str), $code).$name."\0".$ref."\0".$int_attr_str;
 	} @$entry_list;
@@ -117,11 +125,10 @@ sub decode {
 		my @fields= (
 			$dirmeta,
 			$code,
-			substr($buf, 0, $name_len),
-			substr($buf, $name_len+1, $ref_len),
+			_inflate_filename(substr($buf, 0, $name_len)),
+			$ref_len? _inflate_filename(substr($buf, $name_len+1, $ref_len)) : undef,
 			map { length($_)? $_ : undef } split(":", substr($buf, $name_len+$ref_len+2, $meta_len)),
 		);
-		$fields[3]= undef if $fields[3] eq '';
 		push @entries, bless(\@fields, __PACKAGE__.'::Entry');
 	}
 	close $handle;
@@ -131,6 +138,10 @@ sub decode {
 		metadata => $meta,
 		entries => \@entries,
 	);
+}
+sub _inflate_filename {
+	my $x= $_[0];
+	utf8::decode($x) && $x || DataStore::CAS::FS::NonUnicode->new($x)
 }
 
 package DataStore::CAS::FS::DirCodec::Unix::Entry;

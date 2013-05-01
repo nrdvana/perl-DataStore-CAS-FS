@@ -51,14 +51,19 @@ sub encode {
 		my ($type, $ref, $name)= ref $_ eq 'HASH'?
 			( $_->{type}, $_->{ref}, $_->{name} )
 			: ( $_->type, $_->ref, $_->name );
+
 		my $code= $_TypeToCode{$type}
 			or croak "Unknown directory entry type '$type' for entry $_";
-		defined $name
-			or croak "Missing name for entry $_";
-		defined $ref or $ref= '';
 
-		utf8::encode($ref) if utf8::is_utf8($ref);
-		utf8::encode($name) if utf8::is_utf8($name);
+		!defined $name? croak "Missing required attribute 'name'"
+			: !ref $name? utf8::encode($name)
+			: ref($name)->can('is_non_unicode')? ($name= "$name")
+			: croak "'name' must be a scalar or a NonUnicode instance";
+
+		!defined $ref? ($ref= '')
+			: !ref $ref? utf8::encode($ref)
+			: ref($ref)->can('is_non_unicode')? ($ref= "$ref")
+			: croak "'ref' must be a scalar or a NonUnicode instance";
 
 		croak "Name too long: '$name'" if 255 < length $name;
 		croak "Value too long: '$ref'" if 255 < length $ref;
@@ -111,9 +116,8 @@ sub decode {
 		my $end= $pos + 3 + $nameLen + 1 + $refLen + 1;
 		($end <= length($bytes))
 			or croak "Unexpected end of file";
-		my $name= substr($bytes, $pos+3, $nameLen);
-		my $ref= substr($bytes, $pos+3+$nameLen+1, $refLen);
-		$ref= undef unless length $ref;
+		my $name= _inflate_filename(substr($bytes, $pos+3, $nameLen));
+		my $ref= $refLen? _inflate_filename(substr($bytes, $pos+3+$nameLen+1, $refLen)) : undef;
 		push @ents, bless [ $code, $name, $ref ], __PACKAGE__.'::Entry';
 		$pos= $end;
 	}
@@ -123,6 +127,10 @@ sub decode {
 		entries => \@ents,
 		metadata => $params->{metadata}
 	);
+}
+sub _inflate_filename {
+	my $x= $_[0];
+	utf8::decode($x) && $x || DataStore::CAS::FS::NonUnicode->new($x)
 }
 
 package DataStore::CAS::FS::DirCodec::Minimal::Entry;

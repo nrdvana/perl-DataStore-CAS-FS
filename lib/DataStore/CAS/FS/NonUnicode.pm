@@ -70,34 +70,32 @@ sub new {
 	my ($class, $str)= (@_ == 1)? (__PACKAGE__,$_[0]) : @_;
 	croak "Passed string was actually unicode: '$str'"
 		if utf8::is_utf8($str);
+	croak "Passed string contains valid utf-8: '$str'"
+		if utf8::decode($str);
 	bless \$str, $class;
 }
+
+sub is_non_unicode { 1 }
 
 sub to_string { ${$_[0]} }
 
 sub str_compare {
 	my ($self, $other, $swap)= @_;
-	if (utf8::is_utf8($other)) {
-		carp "Comparing Unicode to non-utf octet array";
-		utf8::encode($other);
-	}
+	if (ref $other eq __PACKAGE__) { $other= $$other } else { utf8::encode($other) }
 	my $ret= $$self cmp $other;
 	return $swap? -$ret : $ret;
 }
 
 sub str_concat {
 	my ($self, $other, $swap)= @_;
-	if (utf8::is_utf8($other)) {
-		carp "Concatenating Unicode and non-utf octet array";
-		utf8::encode($other);
-	}
-	return bless \($swap? $other.$$self : $$self.$other), ref($self);
+	if (ref $other eq __PACKAGE__) { $other= $$other } else { utf8::encode($other) }
+	return bless \($swap? $other.$$self : $$self.$other), __PACKAGE__;
 }
 
 sub add_json_filter {
 	my ($self, $json)= @_;
 	$json->filter_json_single_key_object(
-		'*NonUnicode*' => \&DataStore::CAS::FS::NonUnicode::FROM_JSON
+		'*NonUnicode*' => \&FROM_JSON
 	);
 }
 
@@ -109,7 +107,7 @@ sub TO_JSON {
 
 sub FROM_JSON {
 	my $x= $_[0];
-	utf8::downgrade($x);
+	utf8::downgrade($x) if utf8::is_utf8($x);
 	return __PACKAGE__->new($x);
 }
 

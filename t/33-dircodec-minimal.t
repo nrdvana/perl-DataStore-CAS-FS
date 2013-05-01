@@ -66,8 +66,8 @@ subtest many_dirent => sub {
 		{ type => 'chardev',  name => 'e', ref => '4321',   },
 		{ type => 'pipe',     name => 'f',                  },
 		{ type => 'socket',   name => 'g',                  },
-		{ type => 'file',     name => "\x{C4}\x{80}", ref => "\x{C4}\x{80}", },
 		{ type => 'file',     name => "\x{FF}",  ref => "\x{FF}"  },
+		{ type => 'file',     name => "\x{100}", ref => "\x{100}", },
 	);
 
 	ok( my $hash= DataStore::CAS::FS::DirCodec->store($cas, 'minimal', \@entries, {}), 'encode' );
@@ -85,11 +85,11 @@ subtest many_dirent => sub {
 
 subtest unicode => sub {
 	my @entries= (
-		{ type => 'file', name => "\xC4\x80\xC5\x90", size => '100000000000000000000000000', ref => '0000' },
-		{ type => 'file', name => "\x80", size => '1', ref => undef },
+		{ type => 'file', name => "\xC4\x80\xC5\x90", ref => '0000' },
+		{ type => 'file', name => DataStore::CAS::FS::NonUnicode->new("\x80"), ref => "\x{C4}\x{80}" },
 	);
 	my @expected= (
-		{ type => 'file', name => "\x80" },
+		{ type => 'file', name => DataStore::CAS::FS::NonUnicode->new("\x80"), ref => "\x{C4}\x{80}" },
 		{ type => 'file', name => "\xC4\x80\xC5\x90", ref => '0000' },
 	);
 	my %metadata= (
@@ -97,8 +97,8 @@ subtest unicode => sub {
 	);
 	my $expected_serialized= qq|CAS_Dir 00 \n|
 		.qq|{"\xEA\xB0\x80":"\xE0\xB2\x80"}\0|
-		.qq|\x01\x00f\x80\0\0|
-		.qq|\x04\x04f\xC4\x80\xC5\x90\x000000\0|;
+		.qq|\x01\x04f\x80\0\xC3\x84\xC2\x80\0|
+		.qq|\x08\x04f\xC3\x84\xC2\x80\xC3\x85\xC2\x90\x000000\0|;
 	my $encoded= DataStore::CAS::FS::DirCodec::Minimal->encode(\@entries, \%metadata);
 	ok( !utf8::is_utf8($encoded), 'encoded as bytes' );
 	is( $encoded, $expected_serialized, 'encoded correctly' );
@@ -108,6 +108,7 @@ subtest unicode => sub {
 		or diag Dumper($dir->metadata);
 	is_deeply( [ map { $_->as_hash } @{$dir->{_entries}} ], \@expected, 'deserialized entries are correct' )
 		or diag Dumper($dir->{_entries});
+	is( ref $dir->{_entries}[0]->name, 'DataStore::CAS::FS::NonUnicode' );
 	done_testing;
 };
 
