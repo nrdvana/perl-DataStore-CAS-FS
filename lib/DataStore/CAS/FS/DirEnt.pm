@@ -122,6 +122,10 @@ The unix atime, as reported by lstat.
 
 The unix ctime, as reported by lstat.
 
+=head2 unix_mtime
+
+An alias for modify_ts.
+
 =head2 unix_dev
 
 The device file number, as reported by lstat.
@@ -163,15 +167,14 @@ BEGIN {
 			unix_mode
 			unix_atime
 			unix_ctime
-			unix_mtime
 			unix_dev
 			unix_inode
 			unix_nlink
 			unix_blocksize
 			unix_blockcount
 		);
+	*unix_mtime= *modify_ts;
 }
-
 
 =head1 METHODS
 

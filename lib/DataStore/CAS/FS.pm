@@ -53,12 +53,13 @@ DataStore::CAS::FS extends the content-addressable API to support directory
 objects which let you store store traditional file hierarchies in the CAS,
 and look up files by a path name (so long as you know the hash of the root).
 
-The methods provided allow you to add files from the real filesystem, export
-virtual trees back to the real filesystem, and traverse the virtual directory
-hierarchy.  The DataStore::CAS backend provides readable and seekable file
+The methods provided allow you to traverse the virtual directory hierarchy,
+make changes to it, and commit the changes to create a new filesystem
+snapshot.  The L<DataStore::CAS> backend provides readable and seekable file
 handles.  There is *not* any support for access control, since those
-concepts are system dependent.  The module DataStore::CAS::FS::Fuse has an
-implementation of permission checking appropriate for Unix.
+concepts are system dependent.  The module DataStore::CAS::FS::Fuse (not yet
+written) will have an implementation of permission checking appropriate for
+Unix.
 
 The directories can contain arbitrary metadata, making them suitable for
 backing up filesystems from Unix, Windows, or other environments.
@@ -72,52 +73,41 @@ and you need to know the digest hash of the root directory in order to browse
 the full filesystem.  On the up side, you can store any number of filesystems
 in one CAS by maintaining a list of roots.
 
-The root's digest hash encompases all the content of the entire tree, so the
-root hash will change each time you alter any directory in the tree.  But, any
-unchanged files in that tree will be re-used, since they still have the same
-digest hash.  You can see great applications of this design in a number of
-version control systems, notably Git.
-
-DataStore::CAS::FS is mostly a wrapper around pluggable modules that handle
-the details.  The primary object involved is a DataStore::CAS storage engine,
-which performs the hashing and storage, and possibly compression or slicing.
-The other main component is DataStore::CAS::FS::Scanner for scanning the real
-filesystem to import directories, and various directory encoding classes like
-DataStore::CAS::FS::Dir::Unix used to serialize and deserialize the
-directories in an efficient manner for your system.
+The root's digest hash is affected by all the content of the entire tree, so
+the root hash will change each time you alter any directory in the tree.  But,
+any unchanged files in that tree will be re-used, since they still have the
+same digest hash.  You can see great applications of this design in a number
+of version control systems, notably Git.
 
 =head1 ATTRIBUTES
 
 =head2 store
 
-Read-only.  An instance of a class implementing 'DataStore::CAS'.
+Read-only.  An instance of a class implementing L<DataStore::CAS>.
 
 =head2 root_entry
 
-A DataStore::CAS::DirEnt object describing the root of the tree.
+A L<DataStore::CAS::DirEnt> object describing the root of the tree.
 Must be of type "dir".  Should have a name of "", but not required.
 You can pick an arbitrary directory for a chroot-like-effect, but beware
 of broken symlinks.
 
-root_entry refers to an **immutable** directory.  If you make in-memory
-overrides to the filesystem using apply_path or the various convenience
-methods, root_entry will continue to refer to the original static filesystem.
-If you then C<commit()> those changes, root_entry will be updated to refer
-to the new filesystem.
+C<root_entry> refers to an **immutable** directory.  If you make in-memory
+overrides to the filesystem using C<apply_path> or the various convenience
+methods, C<root_entry> will continue to refer to the original static
+filesystem. If you then C<commit()> those changes, C<root_entry> will be
+updated to refer to the new filesystem.
 
 You can create a list of filesystem snapshots by saving a copy of root_entry
 each time you call C<commit()>.  They will all continue to exist within the
 CAS.  Cleaning up the CAS is left as an exercise for the reader. (though
-utility methods to help with this are planned)
+utility methods to help with this are in the works)
 
 =head2 case_insensitive
 
 Read-only.  Defaults to false.  If set to true in the constructor, this causes
 all directory entries to be compared in a case-insensitive manner, and all
 directory objects to be loaded with case-insensitive lookup indexes.
-
-Be careful not to share a directory cache between FS objects with opposing
-case_insensitive settings.
 
 =head2 hash_of_null
 
@@ -132,10 +122,10 @@ In other words, the return value of
 
 This value is cached for performance.
 
-It is possible to encode empty directories with any plugin, so
-not all empty directories will have this key, but any time the
-library knows it is writing an empty directory, it will use this
-value instead of recalculating the hash of an empty dir.
+It is possible to encode empty directories with any plugin, so not all empty
+directories will have this key, but any time the library knows it is writing
+an empty directory, it will use this value instead of recalculating the hash
+of an empty dir.
 
 =cut
 
@@ -166,7 +156,9 @@ has _path_overrides   => ( is => 'rw' );
 
 =head1 METHODS
 
-=head2 new( %args | \%args )
+=head2 new
+
+  $fs= $class->new( %args | \%args )
 
 Parameters:
 
@@ -174,14 +166,14 @@ Parameters:
 
 =item store - required
 
-An instance of DataStore::CAS
+An instance of (a subclass of) L<DataStore::CAS>
 
 =item root_entry - required
 
-An instance of DataStore::CAS::FS::DirEnt, or a hashref of DirEnt fields, or
-an empty hash if you want to start from an empty filesystem, or a
-DataStore::CAS::FS::Dir which you want to be the root directory
-(or a DataStore::CAS::File object that contains a serialized Dir) or
+An instance of L<DataStore::CAS::FS::DirEnt>, or a hashref of DirEnt fields,
+or an empty hash if you want to start from an empty filesystem, or a
+L<DataStore::CAS::FS::Dir> which you want to be the root directory
+(or a L<DataStore::CAS::File> object that contains a serialized Dir) or
 or a digest hash of that File within the store.
 
 =item root - alias for root_entry
@@ -253,9 +245,9 @@ sub BUILD {
 		or croak "Unable to load root directory '".$self->root_entry->ref."'";
 }
 
-=head2 get( $hash [, \%flags ])
+=head2 get
 
-Alias for store->get
+Alias for L<DataStore::CAS/get|store->get>
 
 =cut
 
@@ -263,11 +255,15 @@ sub get {
 	(shift)->store->get(@_);
 }
 
-=head2 get_dir( $hash|$file [, \%flags ])
+=head2 get_dir
+
+  $dir= $fs->get_dir( $digest_hash );
+  $dir= $fs->get_dir( $fileObj );
+  $dir= $fs->get_dir( $either, \%flags );
 
 This returns a de-serialized directory object found by its hash.  It is a
 shorthand for 'get' on the Store, and deserializing enough of the result to
-create a usable DataStore::CAS::FS::Dir object (or subclass).
+create a usable L<DataStore::CAS::FS::Dir> object (or subclass).
 
 Also, this method caches recently used directory objects, since they are
 immutable. (but woe to those who break the API and modify their directory
@@ -298,25 +294,25 @@ sub get_dir {
 	return $dir;
 }
 
-=head2 put( $thing [, \%flags ] )
+=head2 put
 
-Alias for store->put
+Alias for L<DataStore::CAS/put|store->put>
 
 =head2 put_scalar
 
-Alias for store->put_scalar
+Alias for L<DataStore::CAS/put_scalar|store->put_scalar>
 
 =head2 put_file
 
-Alias for store->put_file
+Alias for L<DataStore::CAS/put_file|store->put_file>
 
 =head2 put_handle
 
-Alias for store->put_handle
+Alias for L<DataStore::CAS/put_handle|store->put_handle>
 
 =head2 validate
 
-Alias for store->validate
+Alias for L<DataStore::CAS/validate|store->validate>
 
 =cut
 
@@ -326,17 +322,20 @@ sub put_file   { (shift)->store->put_file(@_) }
 sub put_handle { (shift)->store->put_handle(@_) }
 sub validate   { (shift)->store->validate(@_) }
 
-=head2 path( @path_names )
+=head2 path
 
-Returns a DataStore::CAS::FS::Path object which provides frendly
-object-oriented access to several other methods of CAS::FS. This object does
-*nothing* other than curry parameters, for your convenience.  In particular,
-the path isn't resolved until you try to use it, and might not be valid.
+  $path= $fs->path( @path_names )
 
-See resolve_path for notes about @path_names.  Especially note that your path
-needs to start with the volume name, which will usually be ''.  Note that
+Returns a L</"PATH OBJECTS"|DataStore::CAS::FS::Path> object which provides
+frendly object-oriented access to several other methods of CAS::FS. This
+object does *nothing* other than curry parameters, for your convenience.
+In particular, the path isn't resolved until you try to use it, and might not
+be valid.
+
+See L</resolve_path> for notes about @path_names.  Especially note that your
+path needs to start with the volume name, which will usually be ''.  Note that
 you get this already if you take an absolute path and pass it to
-File::Spec->splitdir.
+L<File::Spec/splitdir|File::Spec->splitdir>.
 
 =cut
 
@@ -345,10 +344,13 @@ sub path {
 		'DataStore::CAS::FS::Path';
 }
 
-=head2 resolve_path( \@path_names [, \%flags ] )
+=head2 resolve_path
 
-Returns an arrayref of DataStore::CAS::FS::DirEnt objects corresponding
-to the canonical absolute specified path, starting with the root_entry.
+  $path_array= $fs->resolve_path( \@path_names )
+  $path_array= $fs->resolve_path( \@path_names, \%flags )
+
+Returns an arrayref of L<DataStore::CAS::FS::DirEnt> objects corresponding
+to the canonical absolute specified path, starting with the C<root_entry>.
 
 First, a note on @path_names: you need to specify the volume, which for UNIX
 is the empty string ''.  While volumes might seem like an unnecessary
@@ -359,7 +361,7 @@ allows us to record general metadata for the filesystem as a whole, within the
 ->metadata of the volume_dir.  As a side benefit, Windows users might
 appreciate being able to save backups of multiple volumes in a way that
 preserves their view of the system.  As another side benefit, it is compatible
-with File::Spec->splitdir.
+with L<< File::Spec/splitdir|File::Spec->splitdir >>.
 
 Next, a note on resolving paths: This function will follow symlinks in much
 the same way Linux does.  If the path you specify ends with a symlink, the
@@ -536,24 +538,35 @@ sub _resolve_path {
 	\@nodes;
 }
 
-=head2 set_path( $path, $Dir_Entry, $flags )
+=head2 set_path
 
-Temporarily override a directory entry at $path.  If $Dir_Entry is false, this
-will cause $path to be unlinked.  If the name of Dir_Entry differs from the
-final component of $path, it will act like a rename (which is the same as just
+  $fs->set_path( \@path, $Dir_Entry )
+  $fs->set_path( \@path, $Dir_Entry, \%flags )
+  # always returns '1'
+
+Temporarily override a directory entry at @path.  If $Dir_Entry is false, this
+will cause @path to be unlinked.  If the name of Dir_Entry differs from the
+final component of @path, it will act like a rename (which is the same as just
 unlinking the old path and creating the new path)  If Dir_Entry is missing a
-name, it will default to the final element of $path.
+name, it will default to the final element of @path.
+
+C<path> may be either an arrayref of names, or a string which will be split by
+L<File::Spec>.
+
+$Dir_Entry is either an instance of L<DataStore::CAS::FS::DirEnt>, or a
+hashref of the fields to create one.
 
 No fields of the old dir entry are used; if you want to preserve some of them,
-you need to do that yourself (but see the handy ->clone(%overrides) method of
-DirEnt)
+you need to do that yourself (see L<DataStore::CAS::FS::DirEnt/clone|clone>)
+or use the C<update_path()> method.
 
-If $path refers to nonexistent directories, they will be created as with
-"mkdir -p", and receive the default metadata of C<$flags{default_dir_fields}>
-(by default, nothing)  If $path travels through a non-directory (aside from
-symlinks, unless C<$flags{follow_symlinks}> is set to 0) this will throw an
-exception, unless you specify C<$flags{force_create}> which causes an
-offending directory entry to be overwritten by a new subdirectory.
+If @path refers to nonexistent directories, they will be created as with a
+virtual "mkdir -p", and receive the default metadata of
+C<$flags{default_dir_fields}> (by default, nothing)  If $path travels through
+a non-directory (aside from symlinks, unless C<$flags{follow_symlinks}> is set
+to 0) this will throw an exception, unless you specify C<$flags{force_create}>
+which causes an offending directory entry to be overwritten by a new
+subdirectory.
 
 Note in particluar that if you specify
 
@@ -563,16 +576,16 @@ Note in particluar that if you specify
 
 None of the changes from apply_path are committed to the CAS until you call
 C<commit()>.  Also, C<root_entry> does not change until you call C<commit()>,
-though the root entry shown by "resolve_path" does.
+though the root entry shown by L</resolve_path> does.
 
 You can return to the last committed state by calling C<rollback()>, which is
-conceptually equivalent to C< $fs= DataStore::CAS::FS->new( $fs->root_entry ) >.
+conceptually equivalent to C<< $fs= DataStore::CAS::FS->new( $fs->root_entry ) >>.
 
 =cut
 
 sub set_path {
 	my ($self, $path, $newent, $flags)= @_;
-
+	$flags ||= {};
 	my $nodes= $self->_resolve_path($path, { follow_symlinks => 1, partial => 1, %$flags });
 	croak $nodes unless ref $nodes;
 
@@ -593,9 +606,12 @@ sub set_path {
 	$self->_apply_overrides($nodes);
 }
 
-=head2 update_path( $path, $changes, $flags )
+=head2 update_path
 
-Like set_path, but it applies a hashref (or arrayref) of $changes to the
+  $fs->update_path( \@path, \%changes, \%flags )
+  $fs->update_path( \@path, \@changes, \%flags )
+
+Like L</set_path>, but it applies a hashref (or arrayref) of $changes to the
 directory entry which exists at the named path.  Use this to update a few
 attributes of a directory entry without overwriting the entire thing.
 
@@ -603,8 +619,8 @@ attributes of a directory entry without overwriting the entire thing.
 
 sub update_path {
 	my ($self, $path, $changes, $flags)= @_;
-
-	my $nodes= $self->_resolve_path($path, { follow_symlinks => 1, partial => 1, %{$flags||{}} });
+	$flags ||= {};
+	my $nodes= $self->_resolve_path($path, { follow_symlinks => 1, partial => 1, %$flags });
 	croak $nodes unless ref $nodes;
 
 	# update the final entry, after applying defaults
@@ -636,9 +652,11 @@ sub _apply_overrides {
 	1;
 }
 
-=head2 mkdir( $path )
+=head2 mkdir
 
-Convenience method to create an empty directory at $path.
+  $fs->mkdir( \@path )
+
+Convenience method to create an empty directory at C<path>.
 
 =cut
 
@@ -647,9 +665,11 @@ sub mkdir {
 	$self->set_path($path, { type => 'dir', ref => $self->hash_of_empty_dir });
 }
 
-=head2 touch( $path )
+=head2 touch
 
-Convenience method to update the timestamp of the directory entry at $path,
+  $fs->touch( \@path )
+
+Convenience method to update the timestamp of the directory entry at C<path>,
 possibly creating it (as an empty file)
 
 =cut
@@ -659,9 +679,11 @@ sub touch {
 	$self->update_path($path, { mtime => time() });
 }
 
-=head2 unlink( $path )
+=head2 unlink
 
-Convenience method to remove the directory entry at $path.
+  $fs->unlink( \@path )
+
+Convenience method to remove the directory entry at C<path>.
 
 =cut
 
@@ -674,6 +696,8 @@ sub unlink {
 # TODO: write copy and move and rename
 
 =head2 rollback
+
+  $fs->rollback();
 
 Revert the FS to the state of the last commit, or the initial state.
 
@@ -690,7 +714,9 @@ sub rollback {
 
 =head2 commit
 
-Merge all in-memory overrides from "apply_path" with the directories
+  $fs->commit();
+
+Merge all in-memory overrides from L</apply_path> with the directories
 they override to create new directories, and store those new directories
 in the CAS.
 
@@ -763,6 +789,35 @@ use Carp;
 
 =head1 PATH OBJECTS
 
+=head2 path_names
+
+Arrayref of path parts
+
+=head2 path_ents
+
+Arrayref of L<DataStore::CAS::FS::DirEnt|DirEnt> objects resolved from the
+C<path_names>.  Lazy-built, so it might C<die> when accessed.
+
+=head2 filesystem
+
+Reference to the DataStore::CAS::FS it was created by.
+
+=head2 path_name_list
+
+Convenience list accessor for path_names arrayref
+
+=head2 path_ent_list
+
+Convenience list accessor for path_ents arrayref
+
+=head2 final_ent
+
+Convenience accessor for final element of path_ents
+
+=head2 type
+
+Convenience accessor for the C<type> field of the final element of C<path_ents>
+
 =cut
 
 # main attributes
@@ -776,6 +831,21 @@ sub path_ent_list  { @{$_[0]->path_ents} }
 sub final_ent      { $_[0]->path_ents->[-1] }
 sub type           { $_[0]->final_ent->type }
 
+=head2 resolve
+
+  $path->resolve()
+
+Call </resolve_path> for C<path_names>, and cache the result in the
+C<path_ents> attribute.  Also returns C<path_ents>.
+
+=head2 path
+
+  $path->path( \@sub_path )
+
+Get a sub-path from this path.  Returns another Path object.
+
+=cut
+
 # methods
 sub resolve {
 	$_[0]{path_ents}= $_[0]{filesystem}->resolve_path($_[0]{path_names})
@@ -788,6 +858,21 @@ sub path {
 		path_names => [ @{$self->path_names}, @_ ]
 	}, ref($self);
 }
+
+=head2 file
+
+  $file= $path->file();
+
+Returns the DataStore::CAS::File of the final element of C<path_ents>,
+or dies trying.
+
+=head2 open
+
+  $handle= $path->open
+
+Alias for C<< $path->file->open >>
+
+=cut
 
 sub file       {
 	defined(my $hash= $_[0]->final_ent->hash)
@@ -809,11 +894,11 @@ Directories are uniquely identified by their hash, and directory objects are
 immutable.  This creates a perfect opportunity for caching recent directories
 and reusing the objects.
 
-When you call C<$fs->get_dir($hash)>, $fs keeps a weak reference to that
+When you call C<< $fs->get_dir($hash) >>, $fs keeps a weak reference to that
 directory which will persist until the directory object is garbage collected.
 It will ALSO hold a strong reference to that directory for the next N calls
-to C<$fs->get_dir($hash)>, where the default is 64.  You can change how many
-references $fs holds by setting C<$fs->dir_cache->size(N)>.
+to C<< $fs->get_dir($hash) >>, where the default is 64.  You can change how many
+references $fs holds by setting C<< $fs->dir_cache->size(N) >>.
 
 The directory cache is *not* global, and a fresh one is created during the
 constructor of the FS, if needed.  However, many FS instances can share the
@@ -823,21 +908,32 @@ the old dir_cache object to the new instance.
 If you want to implement your own dir_cache, don't bother subclassing the
 built-in one; just create an object that meets this API:
 
-=head1 size( [$new_size] )
+=head1 new
+
+  $cache= $class->new( %fields )
+  $cache= $class->new( \%fields )
+
+Create a new cache object.  The only public field is C<size>.
+
+=head1 size
 
 Read/write accessor that returns the number of strong-references it will hold.
 
-=head1 clear()
+=head1 clear
 
 Clear all strong references and clear the weak-reference index.
 
-=head1 get( $digest_hash )
+=head1 get
 
-Return a cached directory, or undef.
+  $cached_dir= $cache->get( $digest_hash )
 
-=head1 put( $dir )
+Return a cached directory, or undef if that directory has not been cached.
 
-Cache the Dir object.
+=head1 put
+
+  $dir= $cache->put( $dir )
+
+Cache the Dir object (and return it)
 
 =cut
 
@@ -1012,4 +1108,5 @@ causing spool directory backups to contain 600,000 files in one directory?
 nothing to optimize the case where a user renames a dir with 20GB of data in
 it?)
 
+=for Pod::Coverage BUILD BUILDARGS
 =cut
