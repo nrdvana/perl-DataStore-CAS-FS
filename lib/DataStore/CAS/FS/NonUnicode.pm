@@ -3,21 +3,14 @@ use strict;
 use warnings;
 use Carp;
 use overload '""' => \&to_string, 'cmp' => \&str_compare, '.' => \&str_concat;
-use Scalar::Util 'refaddr', 'reftype', 'blessed';
 
-=head1 NAME
-
-DataStore::CAS::FS::NonUnicodeOctets - class to wrap non-unicode data to
-prevent it from getting mis-coded during serialization.
+# ABSTRACT: Wrapper to represent non-utf8 data in a unicode context
 
 =head1 SYNOPSIS
 
-  my $j= JSON->new()->convert_blessed
-             ->filter_json_single_key_object(
-                '*NonUnicode*' => \&DataStore::CAS::FS::NonUnicode::FROM_JSON
-               );
-  
-  my $x= DataStore::CAS::FS::NonUnicode->new("\x{FF}");
+  my $j= JSON->new()->convert_blessed;
+  DataStore::CAS::FS::NonUnicode->add_json_filter($j);
+  my $x= DataStore::CAS::FS::NonUnicode->decode_utf8("\x{FF}");
   my $json= $j->encode($x);
   my $x2= "".$j->decode($json);
   is( $x, $x2 );
@@ -25,54 +18,56 @@ prevent it from getting mis-coded during serialization.
 
 =head1 DESCRIPTION
 
-This utility class wraps a string such that it won't accidentally be converted
-to unicode.  When encoding Perl strings as JSON, the unicode flag gets lost,
-and all strings are interpreted as unicode when deserialized.
+Much like using 'i' (or j) as the square root of -1, NonUnicode allows a value
+which should have been utf-8, but isn't, to exist alongside the others.
 
-This class has a to_json() method that writes
-C<{ '*NonUnicode*' => $bytes_as_codepoints }>.  You can check for that when
-reading JSON using JSON's C<filter_json_single_key_object> with the FROM_JSON
-method.
+Combining NonUnicode parts to make a valid utf-8 string will automatically
+decode the utf-8 into the resulting unicode string.
+
+Comparing NonUnicode with a regular perl string will first convert the string
+to a UTF-8 representation, and then do a byte-wise comparison.
+
+NonUnicode can also safely pass through JSON, if the filter is added to the
+JSON decoder, and "allow_blessed" is set on the encoder.
 
 =head1 METHODS
 
-=head2 new( $byte_str )
+=head2 decode_utf8
 
-Wraps the given scalar with an instance of this class.
+  $string_or_ref= $class->decode_utf8( $byte_str )
 
-Dies if the scalar is actually unicode.
+If the $byte_str is valid UTF-8, this method returns the decoded perl unicode
+string.  If not, it returns the string wrapped in an instance of NonUnicode.
 
-=head2 to_string  #stringify operator
+=head2 is_non_unicode
+
+This method returns true, and can be used in tests like
+
+  if ($_->can('is_non_unicode')) { ... }
+
+as a way of detecting NonUnicode objects by API rather than class hierarchy.
+
+=head2 to_string  ('""' operator)
 
 Returns the original string.
 
-=head2 str_compare  #cmp operator
+=head2 str_compare  ('cmp' operator)
 
-Runs a regular 'cmp'.  Warns if comparing the string to a unicode string.
+Converts peer to utf-8 bytes, then compares the bytes.
 
-=head2 str_concat  #'.' operator
+=head2 str_concat  ('.' operator)
 
-Warns if concatenating to a unicode string.  Converts the unicode string to
-UTF-8 octets before concatenating, and returns a NonUnicodeOctets object.
-
-=head2 TO_JSON
-
-Called by the JSON module when convert_blessed is enabled.
-
-=head2 FROM_JSON
-
-Pass this function to JSON's C<filter_json_single_key_object> with a key of
-'*NonUnicode*' to restore the objects that were serialized.
+Converts the peer to utf-8 bytes, concatenates the bytes, and then re-evaluates
+whether the result needs to be wrapped in an instance of NonUnicode.
 
 =cut
 
-sub new {
-	my ($class, $str)= (@_ == 1)? (__PACKAGE__,$_[0]) : @_;
-	croak "Passed string was actually unicode: '$str'"
-		if utf8::is_utf8($str);
-	croak "Passed string contains valid utf-8: '$str'"
-		if utf8::decode($str);
-	bless \$str, $class;
+sub decode_utf8 {
+	my ($class, $str)= @_;
+	!ref $str || ref($str)->isa($class)
+		or croak "Can't convert ".ref($str);
+	return ref($str) || utf8::is_utf8($str) || utf8::decode($str)? $str
+		: bless(\$str, $class);
 }
 
 sub is_non_unicode { 1 }
@@ -89,14 +84,42 @@ sub str_compare {
 sub str_concat {
 	my ($self, $other, $swap)= @_;
 	if (ref $other eq __PACKAGE__) { $other= $$other } else { utf8::encode($other) }
-	return bless \($swap? $other.$$self : $$self.$other), __PACKAGE__;
+	return ref($self)->decode_utf8($swap? $other.$$self : $$self.$other);
 }
+
+=head2 add_json_filter
+
+  $json_instance= $class->add_json_filter($json_instance);
+
+Applies a filter to the JSON object so that when it encounters
+
+  { "*NonUnicode*": "$string" }
+
+it will inflate the string using the FROM_JSON method.
+
+=head2 TO_JSON
+
+Called by the JSON module when convert_blessed is enabled.  Returns
+
+  { "*NonUnicode*" => $original_str }
+
+which can be converted back to a NonUnicode object during decode_json,
+if the filter is applied.
+
+=head2 FROM_JSON
+
+Pass this function to JSON's C<filter_json_single_key_object> with a key of
+'*NonUnicode*' to restore the objects that were serialized.  It takes care
+of calling utf8::downgrade to undo the JSON module's unicode conversion.
+
+=cut
 
 sub add_json_filter {
 	my ($self, $json)= @_;
 	$json->filter_json_single_key_object(
 		'*NonUnicode*' => \&FROM_JSON
 	);
+	$json;
 }
 
 sub TO_JSON {
@@ -108,45 +131,7 @@ sub TO_JSON {
 sub FROM_JSON {
 	my $x= $_[0];
 	utf8::downgrade($x) if utf8::is_utf8($x);
-	return __PACKAGE__->new($x);
-}
-
-1;
-
-__END__
-
-# The inverse operation, which can be applied to a whole tree
-#  after deserializing JSON.
-my $_seen= ();
-sub RestoreObjects {
-	return unless defined $_[1] and ref $_[1];
-	local %$_seen= ();
-	local $_= $_[1];
-	&_restore_recursive;
-}
-sub _restore_recursive {
-	return if $_seen->{blessed($_)? refaddr $_ : $_}++;
-	my $r= blessed($_)? reftype $_ : ref $_;
-	if ($r eq 'HASH') {
-		if (defined $_->{'*NonUnicode*'} and (ref $_ eq 'HASH') and (keys %$_ == 1)) {
-			# Found a former instance.  Restore it to being a blessed object.
-			my $x= $_->{'*NonUnicode*'};
-			utf8::downgrade($x);
-			$_= __PACKAGE__->new($x);
-		}
-		else {
-			defined $_ and ref $_ and &_restore_recursive
-				for values %$_;
-		}
-	}
-	elsif ($r eq 'ARRAY') {
-		defined $_ and ref $_ and &_restore_recursive
-			for @$_;
-	}
-	elsif ($r eq 'REF' and defined $$_ and ref $$_) {
-		local $_= $$_;
-		&_restore_recursive
-	}
+	return bless \$x, __PACKAGE__;
 }
 
 1;

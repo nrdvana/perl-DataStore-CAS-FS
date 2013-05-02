@@ -15,9 +15,33 @@ our $VERSION= 1.0000;
 
 __PACKAGE__->register_format(unix => __PACKAGE__);
 
+# ABSTRACT: Efficiently encode only the attributes of a UNIX stat()
+
+=head1 DESCRIPTION
+
+This directory encoder/decoder encodes only the fields of a DirEnt
+corresponding to a unix stat_t structure.  (or more precisely, the fields
+perl returns from the stat function)  Any other fields in the DirEnt are
+ignored.
+
+It does this much more efficiently than would be done in JSON, but still uses
+text, to avoid complications of endian-ness and word size. (and because 32-bit
+perl can't numerically process 64-bit integers)  The encoding is further
+optimized by ordering the fields by likelyhood of being used, and truncating
+records at the last used field.
+
+It also imposes some restrictions: 'name' and 'ref' must each be less than 256
+bytes when encoded as UTF-8.  There is also a limitation on the unix stat
+values, but they will all fit even with max-length 64 bit integers, so this
+shouldn't ever be a problem.
+
 =head1 METHODS
 
-=head2 $class->encode( \@entries, \%metadata )
+=head2 encode
+
+  $serialized= $class->encode( \@entries, \%metadata )
+
+See L<DataStore::CAS::FS::DirCodec>
 
 =cut
 
@@ -86,6 +110,14 @@ sub encode {
 	$ret;
 }
 
+=head2 decode
+
+  my $dir= $class->decode( \%params )
+
+See L<DataStore::CAS::FS::DirCodec>
+
+=cut
+
 sub decode {
 	my ($class, $params)= @_;
 	$params->{format}= $class->_read_format($params)
@@ -125,8 +157,8 @@ sub decode {
 		my @fields= (
 			$dirmeta,
 			$code,
-			_inflate_filename(substr($buf, 0, $name_len)),
-			$ref_len? _inflate_filename(substr($buf, $name_len+1, $ref_len)) : undef,
+			DataStore::CAS::FS::NonUnicode->decode_utf8(substr($buf, 0, $name_len)),
+			$ref_len? DataStore::CAS::FS::NonUnicode->decode_utf8(substr($buf, $name_len+1, $ref_len)) : undef,
 			map { length($_)? $_ : undef } split(":", substr($buf, $name_len+$ref_len+2, $meta_len)),
 		);
 		push @entries, bless(\@fields, __PACKAGE__.'::Entry');
@@ -138,10 +170,6 @@ sub decode {
 		metadata => $meta,
 		entries => \@entries,
 	);
-}
-sub _inflate_filename {
-	my $x= $_[0];
-	utf8::decode($x) && $x || DataStore::CAS::FS::NonUnicode->new($x)
 }
 
 package DataStore::CAS::FS::DirCodec::Unix::Entry;

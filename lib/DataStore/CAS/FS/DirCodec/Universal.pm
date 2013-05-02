@@ -24,7 +24,7 @@ __PACKAGE__->register_format( universal => __PACKAGE__ );
   my %metadata= ( foo => 1, bar => 42 );
   my @entries= ( { name => 'file1', type => 'file', ref => 'SHA1DIGESTVALUE', mtime => '1736354736' } );
   
-  my $digest_hash= DataStore::CAS::FS::DirCodec->store( $cas, 'universal', \@entries, \%metadata );
+  my $digest_hash= DataStore::CAS::FS::DirCodec->put( $cas, 'universal', \@entries, \%metadata );
   my $dir= DataStore::CAS::FS::DirCodec->load( $cas->get($digest_hash) );
   
   print Dumper( $dir->get_entry('file1') );
@@ -123,19 +123,13 @@ sub _preserve_octets {
 	}
 }
 
-=head2 $class->decode( \%params )
+=head2 decode
 
-Params 'file' and 'format' have already been initialized, and if the
-parameters 'handle' and 'data' were specified they are forwarded to this
-method.
+  $dir= $class->decode( %params )
 
-"data" is the complete data of the file, and if present should eliminate the
-need to open the file.
+Reverses C<encode>, to create a Dir object.
 
-"handle" is an open file handle to the data of the file, and should be used
-if provided.
-
-If neither is given, this calls file->open to get a handle to work with.
+See L<DataStore::CAS::FS::DirCodec> for details on %params.
 
 =cut
 

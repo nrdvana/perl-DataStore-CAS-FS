@@ -2,7 +2,6 @@
 use strict;
 use warnings;
 use Test::More;
-use Data::Dumper;
 
 use_ok('DataStore::CAS::FS::DirCodec::Unix') || BAIL_OUT;
 use_ok('DataStore::CAS::Virtual') || BAIL_OUT;
@@ -10,7 +9,7 @@ use_ok('DataStore::CAS::Virtual') || BAIL_OUT;
 my $cas= DataStore::CAS::Virtual->new();
 
 subtest empty_dir => sub {
-	my $hash= DataStore::CAS::FS::DirCodec->store($cas, 'unix', [], {});
+	my $hash= DataStore::CAS::FS::DirCodec->put($cas, 'unix', [], {});
 	my $file= $cas->get($hash);
 	#is( $file->data, qq|CAS_Dir 04 unix\n\0|, 'encode' );
 	isa_ok( my $decoded= DataStore::CAS::FS::DirCodec->load($file), 'DataStore::CAS::FS::Dir', 'decode' );
@@ -26,7 +25,7 @@ subtest one_dirent => sub {
 	my @expected= (
 		{ type => 'file', name => 'test' }
 	);
-	my $hash= DataStore::CAS::FS::DirCodec->store($cas, 'unix', \@entries, {});
+	my $hash= DataStore::CAS::FS::DirCodec->put($cas, 'unix', \@entries, {});
 	my $file= $cas->get($hash);
 	#my $expected= qq|CAS_Dir 04 unix\n\0\x04\0ftest\0\0|;
 	#is( $file->data, $expected, 'encode' );
@@ -66,7 +65,7 @@ subtest many_dirent => sub {
 		{ type => 'socket',   name => 'g', size => 1,                      },
 	);
 
-	ok( my $hash= DataStore::CAS::FS::DirCodec->store($cas, 'unix', \@entries, {}), 'encode' );
+	ok( my $hash= DataStore::CAS::FS::DirCodec->put($cas, 'unix', \@entries, {}), 'encode' );
 	my $file= $cas->get($hash);
 
 	isa_ok( my $dir= DataStore::CAS::FS::DirCodec->load($file), 'DataStore::CAS::FS::Dir', 'decode' );
@@ -79,13 +78,15 @@ subtest many_dirent => sub {
 	done_testing;
 };
 
+sub non_unicode { bless \$_[0], 'DataStore::CAS::FS::NonUnicode' }
+
 subtest unicode => sub {
 	my @entries= (
 		{ type => 'file', name => "\xC4\x80\xC5\x90", size => '100000000000000000000000000', ref => '0000' },
-		{ type => 'file', name => DataStore::CAS::FS::NonUnicode->new("\x80"), size => '1', ref => "\x{C4}\x{80}" },
+		{ type => 'file', name => non_unicode("\x80"), size => '1', ref => "\x{C4}\x{80}" },
 	);
 	my @expected= (
-		{ type => 'file', name => DataStore::CAS::FS::NonUnicode->new("\x80"), size => '1', ref => "\x{C4}\x{80}" },
+		{ type => 'file', name => non_unicode("\x80"), size => '1', ref => "\x{C4}\x{80}" },
 		{ type => 'file', name => "\xC4\x80\xC5\x90", size => '100000000000000000000000000', ref => '0000' },
 	);
 	my %metadata= (
@@ -97,10 +98,8 @@ subtest unicode => sub {
 	
 	my $file= $cas->get($cas->put_scalar($encoded));
 	isa_ok( my $dir= DataStore::CAS::FS::DirCodec::Unix->decode({ file => $file }), 'DataStore::CAS::FS::Dir' );
-	is_deeply( $dir->metadata, \%metadata, 'deserialized metadata are correct' )
-		or diag Dumper($dir->metadata);
-	is_deeply( [ map { $_->as_hash } @{$dir->{_entries}} ], \@expected, 'deserialized entries are correct' )
-		or do { use DDP; p($dir->{_entries}); };
+	is_deeply( $dir->metadata, \%metadata, 'deserialized metadata are correct' );
+	is_deeply( [ map { $_->as_hash } @{$dir->{_entries}} ], \@expected, 'deserialized entries are correct' );
 	is( ref $dir->{_entries}[0]->name, 'DataStore::CAS::FS::NonUnicode' );
 	done_testing;
 };

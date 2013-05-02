@@ -1,24 +1,19 @@
 package DataStore::CAS::FS;
 use 5.008;
-use Moo;
+use Moo 1.000007;
 use Carp;
-use Try::Tiny;
+use Try::Tiny 0.11;
+use File::Spec 3.33;
+use DataStore::CAS 0.01;
 
 our $VERSION= '0.0100';
-sub VersionParts {
-	return (int($VERSION), (int($VERSION*100)%100), (int($VERSION*10000)%100));
-}
 
-require DataStore::CAS;
 require DataStore::CAS::FS::Dir;
 require DataStore::CAS::FS::DirCodec::Universal;
 require DataStore::CAS::FS::DirCodec::Minimal;
 require DataStore::CAS::FS::DirCodec::Unix;
-require File::Spec;
 
-=head1 NAME
-
-DataStore::CAS::FS - Filesystem on top of Content-Addressable Storage
+# ABSTRACT: Virtual Filesystem backed by Content-Addressable Storage
 
 =head1 SYNOPSIS
 
@@ -758,7 +753,7 @@ sub _commit_recursive {
 	my $format= $node->{dir}->format
 		if $node->{dir};
 	$format= 'universal' unless defined $format;
-	return DataStore::CAS::FS::DirCodec->store($self->store, $format, \@entries, {});
+	return DataStore::CAS::FS::DirCodec->put($self->store, $format, \@entries, {});
 }
 
 package DataStore::CAS::FS::Path;

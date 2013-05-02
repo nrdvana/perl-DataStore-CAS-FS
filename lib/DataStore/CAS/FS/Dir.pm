@@ -7,10 +7,7 @@ use Try::Tiny;
 
 our $VERSION= 1.0000;
 
-=head1 NAME
-
-DataStore::CAS::FS::Dir - Object representing a directory of file entries,
-indexed by filename.
+# ABSTRACT: Object representing a directory of file entries, indexed by filename.
 
 =head1 SYNOPSIS
 
@@ -71,15 +68,17 @@ sub metadata { $_[0]{metadata} }
 
 =head1 METHODS
 
-=head2 $class->new( %params | \%params )
+=head2 new
 
-Create a new basic Dir object.  The required parameters are 'file', and
-'format'.  'metadata' will default to an empty hashref, and 'entries' will
+  $dir= $class->new( %params | \%params )
+
+Create a new basic Dir object.  The required parameters are C<file>, and
+C<format>.  C<metadata> will default to an empty hashref, and C<entries> will
 default to an empty list.
 
-The 'entries' parameter is not a public attribute, and is stored internally
-as _entries.  This is because not all subclasses will have an array of entries
-available.  Use the method "iterator" instead.
+The C<entries> parameter is not a public attribute, and is stored internally
+as C<_entries>.  This is because not all subclasses will have an array of
+entries available.  Use the method C<iterator> instead.
 
 =cut
 
@@ -93,14 +92,17 @@ sub new {
 	bless \%p, $class;
 }
 
-=head2 $dir->iterator
+=head2 iterator
+
+  $i= $dir->iterator;
+  while (my $next= $i->()) { ... }
 
 Returns an iterator over the entries in the directory.
 
-The iterator is a coderef where each successive call returns the next
-DirEnt.  Returns undef at the end of the list.
-Entries are not guaranteed to be in any order, or even to be
-unique names.  (in particular, because of case sensitivity rules)
+The iterator is a coderef where each successive call returns the next DirEnt.
+Returns undef at the end of the list. Entries are not guaranteed to be in any
+order, or even to be unique names.  (in particular, because of case
+sensitivity rules)
 
 =cut
 
@@ -110,7 +112,9 @@ sub iterator {
 	return sub { $i < $n? $list->[$i++] : undef };
 }
 
-=head2 $ent= $dir->get_entry($name, %flags)
+=head2 get_entry
+
+  $dirEnt= $dir->get_entry($name, %flags)
 
 Get a directory entry by name.
 

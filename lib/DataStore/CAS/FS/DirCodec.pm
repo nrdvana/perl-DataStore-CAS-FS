@@ -5,11 +5,11 @@ use warnings;
 use Carp;
 use Try::Tiny;
 
+our $VERSION= 0.0100;
+
 our %_Formats= ();
 
-=head1 NAME
-
-DataStore::CAS::FS::DirCodec - encode and decode directories
+# ABSTRACT: Abstract base class for directory encoder/decoders
 
 =head1 SYNOPSIS
 
@@ -70,22 +70,24 @@ directory, and then read it on demand as the user requests entries by name.
 
 =back
 
-=head1 DIR AND DIR::ENTRY OBJECTS
+=head1 DIR AND DIRENT OBJECTS
 
 (mentioned here for emphasis)
 
-All DataStore::CAS::FS::Dir objects are intended to be immutable, as are the
-DirEnt objects they index.  They are also cached by DataStore::CAS::FS, so
-modifying them could cause problems.  Don't do that.
+All L<DataStore::CAS::FS::Dir> objects are intended to be immutable, as are the
+L<DataStore::CAS::FS::DirEnt> objects they index.  They are also cached by
+L<DataStore::CAS::FS>, so modifying them could cause problems.  Don't do that.
 
-If you want to make changes to a DirEnt, call "$entry->clone( %overrides )"
+If you want to make changes to a DirEnt, use
+
+  $entry= $entry->clone( %overrides );
 
 =head1 METHODS
 
 =head2 $class->load( $file | \%params )
 
 This factory method reads the first few bytes of $file (which must be an
-instance of DataStore::CAS::File) to determine which codec to use.
+instance of L<DataStore::CAS::File>) to determine which codec to use.
 (but see parameter 'data')
 
 The appropriate codec's ->decode method will then be invoked, if available.
@@ -98,7 +100,7 @@ Parameters:
 
 =item file
 
-The single $file is equivalent to "{ file => $file }".  It specifies the CAS
+The single $file is equivalent to C<< { file => $file } >>.  It specifies the CAS
 item to read the serialized directory from.
 
 =item format
@@ -107,7 +109,7 @@ If you know the format ahead of time, you may specify it to prevent load() from
 needing to read the $file.  (though most directory codecs will immediately
 read it anyway)
 
-format must be one of the registered formats.  See C<register_format>.
+C<format> must be one of the registered formats.  See C<register_format>.
 
 =item handle
 
@@ -141,7 +143,9 @@ sub load {
 	return $codec->decode(\%p);
 }
 
-=head2 $class->store( $cas, $format, \@entries, \%metadata )
+=head2 put
+
+  $class->put( $cas, $format, \@entries, \%metadata )
 
 Store an array of directory entries, and optionally some directory metadata,
 into the $cas, encoded in $format.
@@ -150,7 +154,7 @@ Returns the digest_hash of the new item.
 
 =cut
 
-sub store {
+sub put {
 	my ($class, $cas, $format, $entries, $metadata)= @_;
 	defined $entries and ref $entries eq 'ARRAY' or croak "entries must be an arrayref";
 	my $codec= $_Formats{$format}
@@ -160,7 +164,9 @@ sub store {
 	return $cas->put_scalar($scalar);
 }
 
-=head2 $self->decode( \%params )
+=head2 decode
+
+  $dir= $self->decode( \%params )
 
 Same parameters as C<load>, except they are guaranteed to be a hashref, and it
 should be assumed that this codec is the correct one to decode the directory.
@@ -171,13 +177,18 @@ sub decode {
 	(shift)->load(@_);
 }
 
-=head2 $self->encode( \@entries, \%metadata )
+=head2 encode
+
+  $self->encode( \@entries, \%metadata )
 
 Encode an array of directory entries, and attach the optional metadata to the
 encoded directory.  Each item of @entries may be either a ::DirEnt object
 or a hashref of fields.
 
 Codecs should assert that each item has a 'type' and 'name' attribute.
+
+Codecs should inspect 'name' and 'ref' to see if they contain NonUnicode
+objects, and restore these objects during decode.
 
 Should return a scalar of the serialized directory.
 
@@ -187,7 +198,9 @@ sub encode {
 	croak "Only implemented in subclasses";
 }
 
-=head2 $class->register_format( $format_id => $codec )
+=head2 register_format
+
+  $class->register_format( $format_id => $codec )
 
 Registers a directory codec to be available to the factory method 'load'.
 
@@ -215,14 +228,56 @@ sub register_format {
 	$_Formats{$format}= $codec;
 }
 
+=head1 EXTENDING
+
+In order to write your own directory codec, all you need to do is implement
+'encode' and 'decode.
+
+=head1 encode
+
+An encoder receives an array of directory entries, and an optional hashref of
+metadata.  The metadata should be stored as-is.  The directory entries can be
+stored however you like, and you may choose to store only a subset of fields.
+(be sure to warn users in your documentation if you ignore fields).
+
+The directories can be a mix of DirEnt objects and plain hashrefs.  You should
+ensure that each one has a name and a type, that the type is valid, and that
+the names aren't duplicated.
+
+Your encoder should attempt to provide a "stable" encoding, so that if it is
+called with the same parameters twice, it will return the same exact bytes.
+This likely means you need to sort the directory entries, and that you need to
+export hashrefs iteratively, because perl will re-arrange the keys randomly.
+
+Your encoded string must be octets (not unicode).
+
+=head1 decode
+
+A decoder takes a file (or a handle, or a scalar with all the data in it) and
+attempts to build a DataStore::CAS::FS::Dir object which views the directory
+entries.
+
+See DirCodec::Universal for an example of how to decode from a plain scalar,
+and DirCodec::Unix for an example of how to read through the stream record by
+record.
+
+You can use the default directory class L<DataStore::CAS::FS::Dir>, or write
+your own.  The default one requires the list of DirEnt objects to be built
+first, but you could theoretically write an implementation that decodes the
+entries on demand.
+
 =head1 UTILITY METHODS
 
-=head2 $class->_magic_number
+=head2 _magic_number
+
+  $str= $class->_magic_number()
 
 Returns a string that all serialized directories start with.
 This is a constant and should never change.
 
-=head2 $class->_calc_header_length( $format )
+=head2 _calc_header_length
+
+  $len= $class->_calc_header_length( $format )
 
 The header length is directly determined by the format string.
 This method returns the header length in bytes.  A directory's encoded data
@@ -240,7 +295,9 @@ sub _calc_header_length {
 	return length($format)+length($_MagicNumber)+4;
 }
 
-=head2 $class->_read_format( \%params )
+=head2 _read_format
+
+  $fmt_string= $class->_read_format( \%params )
 
 This method inspects the first few bytes of $params{file} to read the format
 string, which it returns.  It first uses $params{data} if available, or
@@ -282,11 +339,15 @@ sub _read_format {
 	return substr($buf, length($_MagicNumber)+3, $format_len);
 }
 
-=head2 $class->_readall( $handle, $buf, $count, $offset )
+=head2 _readall
+
+  $class->_readall( $handle, $buf, $count, $offset )
 
 A small wrapper around 'read()' which croaks if it can't read the full
 requested number of bytes, and properly handles EINTR and EAGAIN and
 partial reads.
+
+Always returns true.
 
 =cut
 
@@ -306,6 +367,7 @@ sub _readall {
 		}
 		$got= read($_[1], $_[2], $count, length $_[2]);
 	}
+	1;
 }
 
 1;

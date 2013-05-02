@@ -58,7 +58,7 @@ subtest load => sub {
 
 subtest store => sub {
 	my $cas= DataStore::CAS::Virtual->new();
-	my $hash= DataStore::CAS::FS::DirCodec->store($cas, 'test', $fake_entries, {});
+	my $hash= DataStore::CAS::FS::DirCodec->put($cas, 'test', $fake_entries, {});
 	is( $encode_entries, $fake_entries, 'entries param' );
 	is_deeply( $encode_metadata, {}, 'metadata param' );
 	is( $cas->get($hash)->data, "CAS_Dir 04 test\n", 'correct data stored' );

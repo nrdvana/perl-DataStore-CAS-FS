@@ -1,10 +1,10 @@
 package DataStore::CAS::FS::DirCodec::Minimal;
-use 5.008;
+use 5.008001;
 use strict;
 use warnings;
 use Carp;
 use Try::Tiny;
-require JSON;
+use JSON 2.53 ();
 require DataStore::CAS::FS::NonUnicode;
 require DataStore::CAS::FS::Dir;
 
@@ -15,11 +15,7 @@ our $VERSION= 1.0000;
 __PACKAGE__->register_format('minimal' => __PACKAGE__);
 __PACKAGE__->register_format('' => __PACKAGE__);
 
-=head1 NAME
-
-DataStore::CAS::FS::DirCodec::Minimal - Directory representation with minimal metadata
-
-=head1 SYNOPSIS
+# ABSTRACT: Directory representation with minimal metadata
 
 =head1 DESCRIPTION
 
@@ -31,7 +27,9 @@ thorough nightly backups.
 
 =head1 METHODS
 
-=head2 $class->encode( \@entries, \%metadata, \%flags )
+=head2 encode
+
+  $serialized= $class->encode( \@entries, \%metadata )
 
 Serialize the given entries into a scalar.
 
@@ -39,14 +37,14 @@ Serialize the bare minimum fields of each entry.  Each entry will have 3
 pieces of data saved: I<type>, I<name>, and I<ref>.
 
 The %metadata is encoded using JSON, which isn't very compact, but if
-you really want a minimal encoding you shouldn't provide metadata anyway.
+you really want a minimal encoding you shouldn't supply metadata anyway.
 
 =cut
 
 our %_TypeToCode= ( file => 'f', dir => 'd', symlink => 'l', chardev => 'c', blockdev => 'b', pipe => 'p', socket => 's' );
 our %_CodeToType= map { $_TypeToCode{$_} => $_ } keys %_TypeToCode;
 sub encode {
-	my ($class, $entry_list, $metadata, $flags)= @_;
+	my ($class, $entry_list, $metadata)= @_;
 	my @entries= map {
 		my ($type, $ref, $name)= ref $_ eq 'HASH'?
 			( $_->{type}, $_->{ref}, $_->{name} )
@@ -79,6 +77,16 @@ sub encode {
 	$ret .= join('', sort { substr($a,3) cmp substr($b,3) } @entries );
 	$ret;
 }
+
+=head2 decode
+
+  $dir= $class->decode( %params )
+
+Reverses C<encode>, to create a Dir object.
+
+See L<DataStore::CAS::FS::DirCodec> for details on %params.
+
+=cut
 
 sub decode {
 	my ($class, $params)= @_;
@@ -116,8 +124,8 @@ sub decode {
 		my $end= $pos + 3 + $nameLen + 1 + $refLen + 1;
 		($end <= length($bytes))
 			or croak "Unexpected end of file";
-		my $name= _inflate_filename(substr($bytes, $pos+3, $nameLen));
-		my $ref= $refLen? _inflate_filename(substr($bytes, $pos+3+$nameLen+1, $refLen)) : undef;
+		my $name= DataStore::CAS::FS::NonUnicode->decode_utf8(substr($bytes, $pos+3, $nameLen));
+		my $ref= $refLen? DataStore::CAS::FS::NonUnicode->decode_utf8(substr($bytes, $pos+3+$nameLen+1, $refLen)) : undef;
 		push @ents, bless [ $code, $name, $ref ], __PACKAGE__.'::Entry';
 		$pos= $end;
 	}
@@ -127,10 +135,6 @@ sub decode {
 		entries => \@ents,
 		metadata => $params->{metadata}
 	);
-}
-sub _inflate_filename {
-	my $x= $_[0];
-	utf8::decode($x) && $x || DataStore::CAS::FS::NonUnicode->new($x)
 }
 
 package DataStore::CAS::FS::DirCodec::Minimal::Entry;
