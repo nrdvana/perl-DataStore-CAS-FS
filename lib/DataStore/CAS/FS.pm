@@ -1006,7 +1006,7 @@ and some backward-compatible APIs exist which can represent the Unicode as
 Latin1 or whatnot on a best-effort basis.  I think the "Unicode everywhere"
 philosophy is arguably a better way to go, but as this tool is primarily
 designed with Unix in mind, and since it is intended for saving backups of real
-filesystems, it needs to be able to accurately store exactly what it find in
+filesystems, it needs to be able to accurately store exactly what it finds in
 the filesystem.  Essentially this means it neeeds to be *able* to store
 invalid UTF-8 sequences, -or- encode the octets as unicode codepoints up to
 0xFF, and later know to write them out to the filesystem as octets instead
