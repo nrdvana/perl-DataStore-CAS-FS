@@ -250,7 +250,7 @@ sub BUILD {
 
 =head2 get
 
-Alias for L<DataStore::CAS/get|store->get>
+Alias for L<< store-E<gt>get|DataStore::CAS/get >>
 
 =cut
 
@@ -260,13 +260,11 @@ sub get {
 
 =head2 get_dir
 
-  $dir= $fs->get_dir( $digest_hash );
-  $dir= $fs->get_dir( $fileObj );
-  $dir= $fs->get_dir( $either, \%flags );
+  $dir= $fs->get_dir( $digest_hash_or_File, \%optional_flags );
 
 This returns a de-serialized directory object found by its hash.  It is a
 shorthand for 'get' on the Store, and deserializing enough of the result to
-create a usable L<DataStore::CAS::FS::Dir> object (or subclass).
+create a usable L<Dir|DataStore::CAS::FS::Dir> object (or subclass).
 
 Also, this method caches recently used directory objects, since they are
 immutable. (but woe to those who break the API and modify their directory
@@ -299,23 +297,23 @@ sub get_dir {
 
 =head2 put
 
-Alias for L<DataStore::CAS/put|store->put>
+Alias for L<< store-E<gt>put | DataStore::CAS/put >>
 
 =head2 put_scalar
 
-Alias for L<DataStore::CAS/put_scalar|store->put_scalar>
+Alias for L<< store-E<gt>put_scalar | DataStore::CAS/put_scalar >>
 
 =head2 put_file
 
-Alias for L<DataStore::CAS/put_file|store->put_file>
+Alias for L<< store-E<gt>put_file | DataStore::CAS/put_file >>
 
 =head2 put_handle
 
-Alias for L<DataStore::CAS/put_handle|store->put_handle>
+Alias for L<< store-E<gt>put_handle | DataStore::CAS/put_handle >>
 
 =head2 validate
 
-Alias for L<DataStore::CAS/validate|store->validate>
+Alias for L<< store-E<gt>validate | DataStore::CAS/validate >>
 
 =cut
 
@@ -329,7 +327,7 @@ sub validate   { (shift)->store->validate(@_) }
 
   $path= $fs->path( @path_names )
 
-Returns a L</"PATH OBJECTS"|DataStore::CAS::FS::Path> object which provides
+Returns a L<DataStore::CAS::FS::Path|/"PATH OBJECTS"> object which provides
 frendly object-oriented access to several other methods of CAS::FS. This
 object does *nothing* other than curry parameters, for your convenience.
 In particular, the path isn't resolved until you try to use it, and might not
@@ -338,7 +336,7 @@ be valid.
 See L</resolve_path> for notes about @path_names.  Especially note that your
 path needs to start with the volume name, which will usually be ''.  Note that
 you get this already if you take an absolute path and pass it to
-L<File::Spec/splitdir|File::Spec->splitdir>.
+L<< File::Spec-E<gt>splitdir|File::Spec/splitdir >>.
 
 =cut
 
@@ -349,8 +347,8 @@ sub path {
 
 =head2 resolve_path
 
-  $path_array= $fs->resolve_path( \@path_names )
-  $path_array= $fs->resolve_path( \@path_names, \%flags )
+  $path_array= $fs->resolve_path( \@path_names, \%optional_flags )
+  $path_array= $fs->resolve_path( $path_string, \%optional_flags )
 
 Returns an arrayref of L<DataStore::CAS::FS::DirEnt> objects corresponding
 to the canonical absolute specified path, starting with the C<root_entry>.
@@ -364,7 +362,7 @@ allows us to record general metadata for the filesystem as a whole, within the
 ->metadata of the volume_dir.  As a side benefit, Windows users might
 appreciate being able to save backups of multiple volumes in a way that
 preserves their view of the system.  As another side benefit, it is compatible
-with L<< File::Spec/splitdir|File::Spec->splitdir >>.
+with L<< File::Spec-E<gt>splitdir|File::Spec/splitdir >>.
 
 Next, a note on resolving paths: This function will follow symlinks in much
 the same way Linux does.  If the path you specify ends with a symlink, the
@@ -543,8 +541,7 @@ sub _resolve_path {
 
 =head2 set_path
 
-  $fs->set_path( \@path, $Dir_Entry )
-  $fs->set_path( \@path, $Dir_Entry, \%flags )
+  $fs->set_path( \@path, $Dir_Entry \%optional_flags )
   # always returns '1'
 
 Temporarily override a directory entry at @path.  If $Dir_Entry is false, this
@@ -560,7 +557,7 @@ $Dir_Entry is either an instance of L<DataStore::CAS::FS::DirEnt>, or a
 hashref of the fields to create one.
 
 No fields of the old dir entry are used; if you want to preserve some of them,
-you need to do that yourself (see L<DataStore::CAS::FS::DirEnt/clone|clone>)
+you need to do that yourself (see L<clone|DataStore::CAS::FS::DirEnt/clone>)
 or use the C<update_path()> method.
 
 If @path refers to nonexistent directories, they will be created as with a
@@ -611,8 +608,8 @@ sub set_path {
 
 =head2 update_path
 
-  $fs->update_path( \@path, \%changes, \%flags )
-  $fs->update_path( \@path, \@changes, \%flags )
+  $fs->update_path( \@path, \%changes, \%optional_flags )
+  $fs->update_path( \@path, \@changes, \%optional_flags )
 
 Like L</set_path>, but it applies a hashref (or arrayref) of $changes to the
 directory entry which exists at the named path.  Use this to update a few
@@ -802,7 +799,7 @@ Arrayref of path parts
 
 =head2 path_ents
 
-Arrayref of L<DataStore::CAS::FS::DirEnt|DirEnt> objects resolved from the
+Arrayref of L<DirEnt|DataStore::CAS::FS::DirEnt> objects resolved from the
 C<path_names>.  Lazy-built, so it might C<die> when accessed.
 
 =head2 filesystem
@@ -842,7 +839,7 @@ sub type           { $_[0]->final_ent->type }
 
   $path->resolve()
 
-Call </resolve_path> for C<path_names>, and cache the result in the
+Call L</resolve_path> for C<path_names>, and cache the result in the
 C<path_ents> attribute.  Also returns C<path_ents>.
 
 =head2 path
@@ -915,28 +912,28 @@ the old dir_cache object to the new instance.
 If you want to implement your own dir_cache, don't bother subclassing the
 built-in one; just create an object that meets this API:
 
-=head1 new
+=head2 new
 
   $cache= $class->new( %fields )
   $cache= $class->new( \%fields )
 
 Create a new cache object.  The only public field is C<size>.
 
-=head1 size
+=head2 size
 
 Read/write accessor that returns the number of strong-references it will hold.
 
-=head1 clear
+=head2 clear
 
 Clear all strong references and clear the weak-reference index.
 
-=head1 get
+=head2 get
 
   $cached_dir= $cache->get( $digest_hash )
 
 Return a cached directory, or undef if that directory has not been cached.
 
-=head1 put
+=head2 put
 
   $dir= $cache->put( $dir )
 
@@ -1097,7 +1094,7 @@ Windows will fail.
 
 The default storage format uses a Unicode-only format, and a special notation
 to represent strings which are not unicode (See
-L<DataStore::CAS::FS::InvalidUTF8/TO_JSON|TO_JSON in InvalidUtf8>.
+L<TO_JSON in InvalidUtf8|DataStore::CAS::FS::InvalidUTF8/TO_JSON>.
 Other formats (Minimal and Unix) always store octets, and then re-detect UTF-8
 when decoding the directory.
 
