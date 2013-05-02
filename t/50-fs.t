@@ -90,6 +90,8 @@ subtest resolve_path => sub {
 	done_testing;
 };
 
+$cas= new_ok('DataStore::CAS::FS', [ store => $sto, root => $rootEntry ], 'create file view of cas' );
+
 subtest alter_path => sub {
 	ok( $cas->update_path('a/b/c', { type => 'dir', ref => 'root.a.b.c.d' }), 'update path' );
 	isa_ok( $cas->_path_overrides, 'HASH', 'overrides initiated' );
@@ -102,6 +104,18 @@ subtest alter_path => sub {
 	isnt( $cas->resolve_path('a/b')->[-1]->ref, 'root.a.b', 'new dir "a/b"' );
 	is( $cas->resolve_path('a/b/c')->[-1]->ref, 'root.a.b.c.d', 'same dir "a/b/c"' );
 	is( $cas->resolve_path('a/b/f')->[-1]->ref, 'root.a.b.f', 'same dir "a/b/f"' );
+	done_testing;
+};
+
+$cas= new_ok('DataStore::CAS::FS', [ store => $sto, root => $rootEntry ], 'create file view of cas' );
+
+subtest path_objects => sub {
+	isa_ok( my $path= $cas->path('a','b','c','d','f1'), 'DataStore::CAS::FS::Path' );
+	ok( my $handle= $path->open );
+	is( do { local $/= undef; scalar <$handle> }, 'Blah Blah' );
+	isa_ok( $path= $cas->path('a','b','c','d')->path('..','..','f','i','j','f1'), 'DataStore::CAS::FS::Path' );
+	ok( $handle= $path->open );
+	is( do { local $/= undef; scalar <$handle> }, 'sdlfshldkjflskdfjslkdjf' );
 	done_testing;
 };
 

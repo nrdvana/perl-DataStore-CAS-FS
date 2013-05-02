@@ -26,10 +26,7 @@ require DataStore::CAS::FS::DirCodec::Unix;
     )
   );
   
-  # Open a multi-volume filesystem on an existing store
-  $casfs= DataStore::CAS::FS->new( store => $cas, volume_dir => $digest_hash );
-  
-  # Open a single root directory on an existing store
+  # Open an existing root directory on an existing store
   $casfs= DataStore::CAS::FS->new( store => $cas, root_dir => $digest_hash );
   
   # --- These pass through to the $cas module
@@ -39,11 +36,11 @@ require DataStore::CAS::FS::DirCodec::Unix;
   $file= $casfs->get($hash);
   
   # Open a path within the filesystem
-  $handle= $casfs->path('','1','2','3','myfile')->open;
+  $handle= $casfs->path('1','2','3','myfile')->open;
   
   # Make some changes
-  $casfs->apply_path(['', '1', '2', 'myfile'], { ref => $some_new_file });
-  $casfs->apply_path(['', '1', '2', 'myfile_copy'], { ref => $some_new_file });
+  $casfs->apply_path(['1', '2', 'myfile'], { ref => $some_new_file });
+  $casfs->apply_path(['1', '2', 'myfile_copy'], { ref => $some_new_file });
   # Commit them
   $casfs->commit();
   
@@ -477,7 +474,7 @@ sub _resolve_path {
 
 		if ($ent->type ne 'dir') {
 			return 'Cannot descend into directory entry "'.$ent->name.'" of type "'.$ent->type.'"'
-				unless $flags->{mkdir} > 1;
+				unless ($flags->{mkdir}||0) > 1;
 			# Here, mkdir flag converts entry into a directory
 			$nodes[-1]{entry}= $ent->clone(@mkdir_defaults);
 		}
@@ -884,8 +881,8 @@ Alias for C<< $path->file->open >>
 
 =cut
 
-sub file       {
-	defined(my $hash= $_[0]->final_ent->hash)
+sub file {
+	defined(my $hash= $_[0]->final_ent->ref)
 		or croak "Path is not a file";
 	$_[0]->filesystem->get($hash);
 }
