@@ -27,7 +27,7 @@ require DataStore::CAS::FS::DirCodec::Unix;
   );
   
   # Open an existing root directory on an existing store
-  $casfs= DataStore::CAS::FS->new( store => $cas, root_dir => $digest_hash );
+  $casfs= DataStore::CAS::FS->new( store => $cas, root => $digest_hash );
   
   # --- These pass through to the $cas module
   
@@ -46,7 +46,7 @@ require DataStore::CAS::FS::DirCodec::Unix;
   
 =head1 DESCRIPTION
 
-DataStore::CAS::FS extends the content-addressable API to support directory
+DataStore::CAS::FS extends the L<DataStore::CAS> API to support directory
 objects which let you store store traditional file hierarchies in the CAS,
 and look up files by a path name (so long as you know the hash of the root).
 
@@ -250,7 +250,7 @@ sub BUILD {
 
 =head2 get
 
-Alias for L<< store-E<gt>get|DataStore::CAS/get >>
+Alias for L<store-E<gt>get|DataStore::CAS/get>
 
 =cut
 
@@ -297,23 +297,23 @@ sub get_dir {
 
 =head2 put
 
-Alias for L<< store-E<gt>put | DataStore::CAS/put >>
+Alias for L<store-E<gt>put|DataStore::CAS/put>
 
 =head2 put_scalar
 
-Alias for L<< store-E<gt>put_scalar | DataStore::CAS/put_scalar >>
+Alias for L<store-E<gt>put_scalar|DataStore::CAS/put_scalar>
 
 =head2 put_file
 
-Alias for L<< store-E<gt>put_file | DataStore::CAS/put_file >>
+Alias for L<store-E<gt>put_file|DataStore::CAS/put_file>
 
 =head2 put_handle
 
-Alias for L<< store-E<gt>put_handle | DataStore::CAS/put_handle >>
+Alias for L<store-E<gt>put_handle|DataStore::CAS/put_handle>
 
 =head2 validate
 
-Alias for L<< store-E<gt>validate | DataStore::CAS/validate >>
+Alias for L<store-E<gt>validate|DataStore::CAS/validate>
 
 =cut
 
@@ -1100,8 +1100,9 @@ when decoding the directory.
 
 =head1 SEE ALSO
 
-C<Brackup> - A similar-minded backup utility written in Perl, but without the
+L<Brackup> - A similar-minded backup utility written in Perl, but without the
 separation between library and application and with limited FUSE performance.
+(and rather sparse documentation)
 
 L<http://git-scm.com> - The world-famous version control tool
 
