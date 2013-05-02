@@ -4,6 +4,8 @@ use warnings;
 use Carp;
 use overload '""' => \&to_string, 'cmp' => \&str_compare, '.' => \&str_concat;
 
+our $VERSION= 0.0100;
+
 # ABSTRACT: Wrapper to represent non-utf8 data in a unicode context
 
 =head1 SYNOPSIS
