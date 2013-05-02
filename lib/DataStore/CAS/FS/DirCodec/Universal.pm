@@ -31,8 +31,8 @@ __PACKAGE__->register_format( universal => __PACKAGE__ );
 
 =head1 DESCRIPTION
 
-This codec can store any arbitrary metadata about a file.  It uses JSON for
-its encoding, so other languages/platforms should be able to easily interface
+This L<DirCodec|DataStore::CAS::FS::DirCodec> can store any arbitrary metadata about a file.
+It uses L<JSON> for its encoding, so other languages/platforms should be able to easily interface
 with the files this codec writes ... except for Unicode caveats.
 
 =head2 Unicode
@@ -61,14 +61,14 @@ happened to be valid UTF-8.
 
 Serialize the given entries into a scalar.
 
-@entries is an array of DirEnt objects or hashrefs mimicing them.
+C<@entries> is an array of L<DirEnt|DataStore::CAS::FS::DirEnt> objects or hashrefs mimicing them.
 
-%metadata is a hash of arbitrary metadata which you want saved along with the
+C<%metadata> is a hash of arbitrary metadata which you want saved along with the
 directory.
 
 This "Universal" DirCodec serializes the data as a short one-line header
 followed by a string of JSON. JSON isn't the most efficient format around,
-but it has wide cross-platform support, and can store any arbitrary DirEnt
+but it has wide cross-platform support, and can store any arbitrary L<DirEnt|DataStore::CAS::FS::DirEnt>
 attributes that you might have, and even structure within them.
 
 The serialization contains newlines in a manner that should make it convenient
@@ -101,26 +101,12 @@ sub encode {
 		."{\"metadata\":$json,\n"
 		." \"entries\":[\n";
 	for (@entries) {
-		# If any of our fields are a byte string that is not valid unicode,
-		# We wrap them with "InvalidUTF8" objects.
-		#_preserve_octets({}) for values %$_;
 		$ret .= $enc->encode($_).",\n"
 	}
 
 	# remove trailing comma
 	substr($ret, -2)= "\n" if @entries;
 	return $ret."]}";
-}
-sub _preserve_octets {
-	my $r= ref $_;
-	if (!$r) {
-		$_= DataStore::CAS::FS::InvalidUTF8->new($_)
-			if !utf8::is_utf8($_) && !utf8::decode($_);
-	} else {
-		croak "Recursion within DirEnt data" if $_[0]{refaddr($_)}++;
-		if ($r eq 'HASH') { &_preserve_octets for values %$_ }
-		elsif ($r eq 'ARRAY') { &_preserve_octets for @$_ }
-	}
 }
 
 =head2 decode
@@ -129,7 +115,7 @@ sub _preserve_octets {
 
 Reverses C<encode>, to create a Dir object.
 
-See L<DataStore::CAS::FS::DirCodec> for details on %params.
+See L<< DirCodec-E<gt>load | DataStore::CAS::FS::DirCodec/load >> for details on C<%params>.
 
 =cut
 

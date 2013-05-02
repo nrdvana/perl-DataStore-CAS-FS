@@ -47,15 +47,15 @@ This method returns true, and can be used in tests like
 
 as a way of detecting InvalidUTF8 objects by API rather than class hierarchy.
 
-=head2 to_string  ('""' operator)
+=head2 to_string, '""' operator
 
 Returns the original string.
 
-=head2 str_compare  ('cmp' operator)
+=head2 str_compare, 'cmp' operator
 
 Converts peer to utf-8 bytes, then compares the bytes.
 
-=head2 str_concat  ('.' operator)
+=head2 str_concat, '.' operator
 
 Converts the peer to utf-8 bytes, concatenates the bytes, and then re-evaluates
 whether the result needs to be wrapped in an instance of InvalidUTF8.
@@ -108,9 +108,10 @@ if the filter is applied.
 
 =head2 FROM_JSON
 
-Pass this function to JSON's C<filter_json_single_key_object> with a key of
-'*InvalidUTF8*' to restore the objects that were serialized.  It takes care
-of calling utf8::downgrade to undo the JSON module's unicode conversion.
+Pass this function to JSON's L<filter_json_single_key_object|JSON/filter_json_single_key_object>
+with a key of C<*InvalidUTF8*> to restore the objects that were serialized.
+It takes care of calling L<utf8::downgrade|utf8/downgrade> to undo the JSON module's unicode
+conversion.
 
 =cut
 

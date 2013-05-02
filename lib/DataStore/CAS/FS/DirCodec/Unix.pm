@@ -19,12 +19,12 @@ __PACKAGE__->register_format(unix => __PACKAGE__);
 
 =head1 DESCRIPTION
 
-This directory encoder/decoder encodes only the fields of a DirEnt
+This directory encoder/decoder encodes only the fields of a L<DirEnt|DataStore::CAS::FS::DirEnt>
 corresponding to a unix stat_t structure.  (or more precisely, the fields
-perl returns from the stat function)  Any other fields in the DirEnt are
+perl returns from the stat function)  Any other fields in the L<DirEnt|DataStore::CAS::FS::DirEnt> are
 ignored.
 
-It does this much more efficiently than would be done in JSON, but still uses
+It does this much more efficiently than would be done in L<JSON>, but still uses
 text, to avoid complications of endian-ness and word size. (and because 32-bit
 perl can't numerically process 64-bit integers)  The encoding is further
 optimized by ordering the fields by likelyhood of being used, and truncating
@@ -41,7 +41,7 @@ shouldn't ever be a problem.
 
   $serialized= $class->encode( \@entries, \%metadata )
 
-See L<DataStore::CAS::FS::DirCodec>
+See L<< DirCodec-E<gt>encode | DataStore::CAS::FS::DirCodec/encode >> for details.
 
 =cut
 
@@ -114,7 +114,7 @@ sub encode {
 
   my $dir= $class->decode( \%params )
 
-See L<DataStore::CAS::FS::DirCodec>
+See L<< DirCodec-E<gt>load | DataStore::CAS::FS::DirCodec/load >> for details on C<%params>.
 
 =cut
 

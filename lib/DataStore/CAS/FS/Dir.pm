@@ -24,13 +24,13 @@ Directory objects have a very basic API of being able to fetch an entry by
 name (optionally case-insensitive, as the user chooses), and iterate all
 entries.
 
-Directory objects are B<IMMUTABLE>, as are the DirEnt objects they return.
+Directory objects are B<IMMUTABLE>, as are the L<DirEnt|DataStore::CAS::FS::DirEnt> objects they return.
 
 =head1 ATTRIBUTES
 
 =head2 file
 
-Read-only, Required.  The DataStore::CAS::File this directory was deserialized
+Read-only, Required.  The L<DataStore::CAS::File> this directory was deserialized
 from.
 
 =head2 store
@@ -99,7 +99,7 @@ sub new {
 
 Returns an iterator over the entries in the directory.
 
-The iterator is a coderef where each successive call returns the next DirEnt.
+The iterator is a coderef where each successive call returns the next L<DirEnt|DataStore::CAS::FS::DirEnt>.
 Returns undef at the end of the list. Entries are not guaranteed to be in any
 order, or even to be unique names.  (in particular, because of case
 sensitivity rules)
@@ -118,7 +118,7 @@ sub iterator {
 
 Get a directory entry by name.
 
-If flags{case_insensitive} is true, then the directory will attempt to do a
+If C<$flags{case_insensitive}> is true, then the directory will attempt to do a
 case-folding lookup on the given name.  Note that all directories are
 case-sensitive when written, and the case-insensitive feature is meant to help
 emulate Windows-like behavior.  In other words, you might have two entries

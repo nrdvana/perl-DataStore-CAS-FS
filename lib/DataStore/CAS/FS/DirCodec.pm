@@ -35,13 +35,13 @@ These are the current implementations:
 
 =item Universal
 
-DataStore::CAS::FS::DirCodec::Universal stores all metadata of each DirEnt
+L<DataStore::CAS::FS::DirCodec::Universal> stores all metadata of each DirEnt
 using JSON.  If you use this codec, you are guaranteed that anything your
 CAS::FS::Scanner picked up was saved into the CAS.
 
 =item Minimal
 
-DataStore::CAS::FS::DirCodec::Minimal only stores type, filename, and content
+L<DataStore::CAS::FS::DirCodec::Minimal> only stores type, filename, and content
 reference, and results in a very compact serialization.  Use this one if you
 don't care about permissions and just want enough information for a quick
 content backup. (ideal for making micro-backups between large comprehensive
@@ -49,7 +49,7 @@ backups)
 
 =item Unix
 
-DataStore::CAS::FS::DirCodec::Unix stores bare 'stat' entries for each file.
+L<DataStore::CAS::FS::DirCodec::Unix> stores bare 'stat' entries for each file.
 It isn't so rigid as to use fixed-width fields, so it should serve any
 unix-like architecture with similar stat() fields.
 
@@ -62,7 +62,7 @@ DirCodec::Windows for ACL-based Windows permissions.  Patches welcome.
 =item Your Own
 
 It is very easy to write your own directory serializer!  See the section
-on L<DataStore::CAS::FS::DirCodec/EXTENDING>.
+on L</EXTENDING>.
 
 For large directories, it is possible with this API to write an indexed
 directory format, where you encode your own b-tree or something in each 
@@ -74,8 +74,8 @@ directory, and then read it on demand as the user requests entries by name.
 
 (mentioned here for emphasis)
 
-All L<DataStore::CAS::FS::Dir> objects are intended to be immutable, as are the
-L<DataStore::CAS::FS::DirEnt> objects they index.  They are also cached by
+All L<Dir|DataStore::CAS::FS::Dir> objects are intended to be immutable, as are the
+L<DirEnt|DataStore::CAS::FS::DirEnt> objects they index.  They are also cached by
 L<DataStore::CAS::FS>, so modifying them could cause problems.  Don't do that.
 
 If you want to make changes to a DirEnt, use
@@ -84,7 +84,9 @@ If you want to make changes to a DirEnt, use
 
 =head1 METHODS
 
-=head2 $class->load( $file | \%params )
+=head2 load
+
+  $dir= $class->load( $file | \%params )
 
 This factory method reads the first few bytes of $file (which must be an
 instance of L<DataStore::CAS::File>) to determine which codec to use.
@@ -100,7 +102,7 @@ Parameters:
 
 =item file
 
-The single $file is equivalent to C<< { file => $file } >>.  It specifies the CAS
+The single $file is equivalent to C<< { file =E<gt> $file } >>.  It specifies the CAS
 item to read the serialized directory from.
 
 =item format
@@ -109,7 +111,7 @@ If you know the format ahead of time, you may specify it to prevent load() from
 needing to read the $file.  (though most directory codecs will immediately
 read it anyway)
 
-C<format> must be one of the registered formats.  See C<register_format>.
+C<format> must be one of the registered formats.  See L</register_format>.
 
 =item handle
 
@@ -168,7 +170,7 @@ sub put {
 
   $dir= $self->decode( \%params )
 
-Same parameters as C<load>, except they are guaranteed to be a hashref, and it
+Same parameters as L</load>, except they are guaranteed to be a hashref, and it
 should be assumed that this codec is the correct one to decode the directory.
 
 =cut
@@ -208,8 +210,8 @@ $format_id is a scalar.  Lowercase strings are reserved for the DataStore::CAS
 distribution, and custom modules are encouraged to use their full package name
 as the $format_id.
 
-$codec is any object implementing ->encode and ->decode.  It should probably
-be a subclass of DirCodec to take advantage of helper methods.
+$codec is any object implementing L<encode|/"encode API"> and L<decode|/"decode API">.
+It should probably be a subclass of DirCodec to take advantage of helper methods.
 
 While the system could have been designed to auto-load classes on demand, that
 seemed like a bad idea because it would allow the contents of the CAS to load
@@ -231,9 +233,9 @@ sub register_format {
 =head1 EXTENDING
 
 In order to write your own directory codec, all you need to do is implement
-'encode' and 'decode.
+'encode' and 'decode'.
 
-=head1 encode
+=head2 encode API
 
 An encoder receives an array of directory entries, and an optional hashref of
 metadata.  The metadata should be stored as-is.  The directory entries can be
@@ -251,14 +253,14 @@ export hashrefs iteratively, because perl will re-arrange the keys randomly.
 
 Your encoded string must be octets (not unicode).
 
-=head1 decode
+=head2 decode API
 
 A decoder takes a file (or a handle, or a scalar with all the data in it) and
 attempts to build a DataStore::CAS::FS::Dir object which views the directory
 entries.
 
-See DirCodec::Universal for an example of how to decode from a plain scalar,
-and DirCodec::Unix for an example of how to read through the stream record by
+See the L<Universal codec|DataStore::CAS::FS::DirCodec::Universal> for an example of how to decode from a plain scalar,
+and L<Unix codec|DataStore::CAS::FS::DirCodec::Unix> for an example of how to read through the stream record by
 record.
 
 You can use the default directory class L<DataStore::CAS::FS::Dir>, or write

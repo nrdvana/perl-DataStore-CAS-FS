@@ -2,6 +2,8 @@ package DataStore::CAS::FS::DirEnt;
 use strict;
 use warnings;
 
+our $VERSION= 0.0100;
+
 # ABSTRACT: Light-weight Immutable Directory Entry Object
 
 =head1 DESCRIPTION
@@ -9,9 +11,9 @@ use warnings;
 DataStore::CAS::FS::DirEnt is a super-light-weight class.  More of an
 interface, really.  DirEnt objects should be considered immutable constants,
 and all attributes are read-only.  It is of course *possible* to modify them,
-but this will break caching features of DataStore::CAS::FS, so don't do that.
+but this will break caching features of L<DataStore::CAS::FS>, so don't do that.
 
-See the C<clone(%params)> method for a convenient way to create modified
+See the L<clone(%params)|/clone> method for a convenient way to create modified
 copies of a DirEnt.
 
 =head1 ATTRIBUTES

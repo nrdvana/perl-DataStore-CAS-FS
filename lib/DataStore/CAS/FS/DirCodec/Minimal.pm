@@ -36,7 +36,7 @@ Serialize the given entries into a scalar.
 Serialize the bare minimum fields of each entry.  Each entry will have 3
 pieces of data saved: I<type>, I<name>, and I<ref>.
 
-The %metadata is encoded using JSON, which isn't very compact, but if
+The C<%metadata> is encoded using L<JSON>, which isn't very compact, but if
 you really want a minimal encoding you shouldn't supply metadata anyway.
 
 =cut
@@ -84,7 +84,7 @@ sub encode {
 
 Reverses C<encode>, to create a Dir object.
 
-See L<DataStore::CAS::FS::DirCodec> for details on %params.
+See L<< DirCodec-E<gt>load | DataStore::CAS::FS::DirCodec/load >> for details on C<%params>.
 
 =cut
 
