@@ -78,7 +78,7 @@ subtest many_dirent => sub {
 	done_testing;
 };
 
-sub non_unicode { bless \$_[0], 'DataStore::CAS::FS::NonUnicode' }
+sub non_unicode { bless \$_[0], 'DataStore::CAS::FS::InvalidUTF8' }
 
 subtest unicode => sub {
 	my @entries= (
@@ -100,7 +100,7 @@ subtest unicode => sub {
 	isa_ok( my $dir= DataStore::CAS::FS::DirCodec::Unix->decode({ file => $file }), 'DataStore::CAS::FS::Dir' );
 	is_deeply( $dir->metadata, \%metadata, 'deserialized metadata are correct' );
 	is_deeply( [ map { $_->as_hash } @{$dir->{_entries}} ], \@expected, 'deserialized entries are correct' );
-	is( ref $dir->{_entries}[0]->name, 'DataStore::CAS::FS::NonUnicode' );
+	is( ref $dir->{_entries}[0]->name, 'DataStore::CAS::FS::InvalidUTF8' );
 	done_testing;
 };
 

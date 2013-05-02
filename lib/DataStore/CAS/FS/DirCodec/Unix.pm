@@ -6,7 +6,7 @@ use Try::Tiny;
 use Carp;
 use JSON;
 use Scalar::Util 'looks_like_number';
-require DataStore::CAS::FS::NonUnicode;
+require DataStore::CAS::FS::InvalidUTF8;
 require DataStore::CAS::FS::Dir;
 
 use parent 'DataStore::CAS::FS::DirCodec';
@@ -72,12 +72,12 @@ sub encode {
 		!defined $name? croak "Missing required attribute 'name'"
 			: !ref $name? utf8::encode($name)
 			: ref($name)->can('is_non_unicode')? ($name= "$name")
-			: croak "'name' must be a scalar or a NonUnicode instance";
+			: croak "'name' must be a scalar or a InvalidUTF8 instance";
 
 		!defined $ref? ($ref= '')
 			: !ref $ref? utf8::encode($ref)
 			: ref($ref)->can('is_non_unicode')? ($ref= "$ref")
-			: croak "'ref' must be a scalar or a NonUnicode instance";
+			: croak "'ref' must be a scalar or a InvalidUTF8 instance";
 
 		$umap{$e->{unix_uid}}= $e->{unix_user}
 			if defined $e->{unix_uid} && defined $e->{unix_user};
@@ -142,7 +142,7 @@ sub decode {
 	my ($dirmeta_len)= unpack('N', $buf);
 	$class->_readall($handle, my $json, $dirmeta_len);
 	my $enc= JSON->new()->utf8->canonical->convert_blessed;
-	DataStore::CAS::FS::NonUnicode->add_json_filter($enc);
+	DataStore::CAS::FS::InvalidUTF8->add_json_filter($enc);
 	my $meta= $enc->decode($json);
 
 	# Quick sanity checks
@@ -157,8 +157,8 @@ sub decode {
 		my @fields= (
 			$dirmeta,
 			$code,
-			DataStore::CAS::FS::NonUnicode->decode_utf8(substr($buf, 0, $name_len)),
-			$ref_len? DataStore::CAS::FS::NonUnicode->decode_utf8(substr($buf, $name_len+1, $ref_len)) : undef,
+			DataStore::CAS::FS::InvalidUTF8->decode_utf8(substr($buf, 0, $name_len)),
+			$ref_len? DataStore::CAS::FS::InvalidUTF8->decode_utf8(substr($buf, $name_len+1, $ref_len)) : undef,
 			map { length($_)? $_ : undef } split(":", substr($buf, $name_len+$ref_len+2, $meta_len)),
 		);
 		push @entries, bless(\@fields, __PACKAGE__.'::Entry');

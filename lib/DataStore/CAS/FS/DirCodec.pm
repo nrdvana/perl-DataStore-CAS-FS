@@ -187,7 +187,7 @@ or a hashref of fields.
 
 Codecs should assert that each item has a 'type' and 'name' attribute.
 
-Codecs should inspect 'name' and 'ref' to see if they contain NonUnicode
+Codecs should inspect 'name' and 'ref' to see if they contain InvalidUTF8
 objects, and restore these objects during decode.
 
 Should return a scalar of the serialized directory.

@@ -83,7 +83,7 @@ subtest many_dirent => sub {
 	done_testing;
 };
 
-sub non_unicode { bless \$_[0], 'DataStore::CAS::FS::NonUnicode' }
+sub non_unicode { bless \$_[0], 'DataStore::CAS::FS::InvalidUTF8' }
 
 subtest unicode => sub {
 	my @entries= (
@@ -100,7 +100,7 @@ subtest unicode => sub {
 	my $expected_serialized= qq|CAS_Dir 09 universal\n|
 		.qq|{"metadata":{"\xEA\xB0\x80":"\xE0\xB2\x80"},\n|
 		.qq| "entries":[\n|
-		.qq|{"name":{"*NonUnicode*":"\xC2\x80"},"ref":"\xC3\x84\xC2\x80","size":"1","type":"file"},\n|
+		.qq|{"name":{"*InvalidUTF8*":"\xC2\x80"},"ref":"\xC3\x84\xC2\x80","size":"1","type":"file"},\n|
 		.qq|{"name":"\xC3\x84\xC2\x80\xC3\x85\xC2\x90","ref":"0000","size":"100000000000000000000000000","type":"file"}\n|
 		.qq|]}|;
 	my $encoded= DataStore::CAS::FS::DirCodec::Universal->encode(\@entries, \%metadata);
@@ -110,7 +110,7 @@ subtest unicode => sub {
 	isa_ok( my $dir= DataStore::CAS::FS::DirCodec::Universal->decode({ file => 0, data => $encoded }), 'DataStore::CAS::FS::Dir' );
 	is_deeply( $dir->metadata, \%metadata, 'deserialized metadata are correct' );
 	is_deeply( [ map { $_->as_hash } @{$dir->{_entries}} ], \@expected, 'deserialized entries are correct' );
-	is( ref $dir->{_entries}[0]->name, 'DataStore::CAS::FS::NonUnicode' );
+	is( ref $dir->{_entries}[0]->name, 'DataStore::CAS::FS::InvalidUTF8' );
 	done_testing;
 };
 

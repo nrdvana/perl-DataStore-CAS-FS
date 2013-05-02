@@ -52,11 +52,11 @@ preserve a few files that had mangled names.  While you might want to fix
 those filenames, it would be inconvenient if your scheduled backups broke
 because of a bad filename.
 
-So, I came up with the L<DataStore::CAS::FS::NonUnicode> object, which you can
+So, I came up with the L<DataStore::CAS::FS::InvalidUTF8> object, which you can
 use to wrap invalid UTF-8 sequences and deal with the problem later.
 
 So, this 'name' field should return a string of unicode codepoints *or* an
-instance of DataStore::CAS::FS::NonUnicode (which can stringify to the
+instance of DataStore::CAS::FS::InvalidUTF8 (which can stringify to the
 original octets)
 
 =head2 type

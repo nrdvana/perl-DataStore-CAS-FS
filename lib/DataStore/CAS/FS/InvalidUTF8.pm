@@ -1,4 +1,4 @@
-package DataStore::CAS::FS::NonUnicode;
+package DataStore::CAS::FS::InvalidUTF8;
 use strict;
 use warnings;
 use Carp;
@@ -9,8 +9,8 @@ use overload '""' => \&to_string, 'cmp' => \&str_compare, '.' => \&str_concat;
 =head1 SYNOPSIS
 
   my $j= JSON->new()->convert_blessed;
-  DataStore::CAS::FS::NonUnicode->add_json_filter($j);
-  my $x= DataStore::CAS::FS::NonUnicode->decode_utf8("\x{FF}");
+  DataStore::CAS::FS::InvalidUTF8->add_json_filter($j);
+  my $x= DataStore::CAS::FS::InvalidUTF8->decode_utf8("\x{FF}");
   my $json= $j->encode($x);
   my $x2= "".$j->decode($json);
   is( $x, $x2 );
@@ -18,16 +18,16 @@ use overload '""' => \&to_string, 'cmp' => \&str_compare, '.' => \&str_concat;
 
 =head1 DESCRIPTION
 
-Much like using 'i' (or j) as the square root of -1, NonUnicode allows a value
+Much like using 'i' (or j) as the square root of -1, InvalidUTF8 allows a value
 which should have been utf-8, but isn't, to exist alongside the others.
 
-Combining NonUnicode parts to make a valid utf-8 string will automatically
+Combining InvalidUTF8 parts to make a valid utf-8 string will automatically
 decode the utf-8 into the resulting unicode string.
 
-Comparing NonUnicode with a regular perl string will first convert the string
+Comparing InvalidUTF8 with a regular perl string will first convert the string
 to a UTF-8 representation, and then do a byte-wise comparison.
 
-NonUnicode can also safely pass through JSON, if the filter is added to the
+InvalidUTF8 can also safely pass through JSON, if the filter is added to the
 JSON decoder, and "allow_blessed" is set on the encoder.
 
 =head1 METHODS
@@ -37,7 +37,7 @@ JSON decoder, and "allow_blessed" is set on the encoder.
   $string_or_ref= $class->decode_utf8( $byte_str )
 
 If the $byte_str is valid UTF-8, this method returns the decoded perl unicode
-string.  If not, it returns the string wrapped in an instance of NonUnicode.
+string.  If not, it returns the string wrapped in an instance of InvalidUTF8.
 
 =head2 is_non_unicode
 
@@ -45,7 +45,7 @@ This method returns true, and can be used in tests like
 
   if ($_->can('is_non_unicode')) { ... }
 
-as a way of detecting NonUnicode objects by API rather than class hierarchy.
+as a way of detecting InvalidUTF8 objects by API rather than class hierarchy.
 
 =head2 to_string  ('""' operator)
 
@@ -58,7 +58,7 @@ Converts peer to utf-8 bytes, then compares the bytes.
 =head2 str_concat  ('.' operator)
 
 Converts the peer to utf-8 bytes, concatenates the bytes, and then re-evaluates
-whether the result needs to be wrapped in an instance of NonUnicode.
+whether the result needs to be wrapped in an instance of InvalidUTF8.
 
 =cut
 
@@ -93,7 +93,7 @@ sub str_concat {
 
 Applies a filter to the JSON object so that when it encounters
 
-  { "*NonUnicode*": "$string" }
+  { "*InvalidUTF8*": "$string" }
 
 it will inflate the string using the FROM_JSON method.
 
@@ -101,15 +101,15 @@ it will inflate the string using the FROM_JSON method.
 
 Called by the JSON module when convert_blessed is enabled.  Returns
 
-  { "*NonUnicode*" => $original_str }
+  { "*InvalidUTF8*" => $original_str }
 
-which can be converted back to a NonUnicode object during decode_json,
+which can be converted back to a InvalidUTF8 object during decode_json,
 if the filter is applied.
 
 =head2 FROM_JSON
 
 Pass this function to JSON's C<filter_json_single_key_object> with a key of
-'*NonUnicode*' to restore the objects that were serialized.  It takes care
+'*InvalidUTF8*' to restore the objects that were serialized.  It takes care
 of calling utf8::downgrade to undo the JSON module's unicode conversion.
 
 =cut
@@ -117,7 +117,7 @@ of calling utf8::downgrade to undo the JSON module's unicode conversion.
 sub add_json_filter {
 	my ($self, $json)= @_;
 	$json->filter_json_single_key_object(
-		'*NonUnicode*' => \&FROM_JSON
+		'*InvalidUTF8*' => \&FROM_JSON
 	);
 	$json;
 }
@@ -125,7 +125,7 @@ sub add_json_filter {
 sub TO_JSON {
 	my $x= ${$_[0]};
 	utf8::upgrade($x);
-	return { '*NonUnicode*' => $x };
+	return { '*InvalidUTF8*' => $x };
 }
 
 sub FROM_JSON {

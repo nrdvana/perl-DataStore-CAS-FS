@@ -5,7 +5,7 @@ use warnings;
 use Carp;
 use Try::Tiny;
 use JSON 2.53 ();
-require DataStore::CAS::FS::NonUnicode;
+require DataStore::CAS::FS::InvalidUTF8;
 require DataStore::CAS::FS::Dir;
 
 use parent 'DataStore::CAS::FS::DirCodec';
@@ -56,12 +56,12 @@ sub encode {
 		!defined $name? croak "Missing required attribute 'name'"
 			: !ref $name? utf8::encode($name)
 			: ref($name)->can('is_non_unicode')? ($name= "$name")
-			: croak "'name' must be a scalar or a NonUnicode instance";
+			: croak "'name' must be a scalar or a InvalidUTF8 instance";
 
 		!defined $ref? ($ref= '')
 			: !ref $ref? utf8::encode($ref)
 			: ref($ref)->can('is_non_unicode')? ($ref= "$ref")
-			: croak "'ref' must be a scalar or a NonUnicode instance";
+			: croak "'ref' must be a scalar or a InvalidUTF8 instance";
 
 		croak "Name too long: '$name'" if 255 < length $name;
 		croak "Value too long: '$ref'" if 255 < length $ref;
@@ -111,7 +111,7 @@ sub decode {
 	$meta_end >= 0 or croak "Missing end of metadata";
 	if ($meta_end > 0) {
 		my $enc= JSON->new()->utf8->canonical->convert_blessed;
-		DataStore::CAS::FS::NonUnicode->add_json_filter($enc);
+		DataStore::CAS::FS::InvalidUTF8->add_json_filter($enc);
 		$params->{metadata}= $enc->decode(substr($bytes, 0, $meta_end));
 	} else {
 		$params->{metadata}= {};
@@ -124,8 +124,8 @@ sub decode {
 		my $end= $pos + 3 + $nameLen + 1 + $refLen + 1;
 		($end <= length($bytes))
 			or croak "Unexpected end of file";
-		my $name= DataStore::CAS::FS::NonUnicode->decode_utf8(substr($bytes, $pos+3, $nameLen));
-		my $ref= $refLen? DataStore::CAS::FS::NonUnicode->decode_utf8(substr($bytes, $pos+3+$nameLen+1, $refLen)) : undef;
+		my $name= DataStore::CAS::FS::InvalidUTF8->decode_utf8(substr($bytes, $pos+3, $nameLen));
+		my $ref= $refLen? DataStore::CAS::FS::InvalidUTF8->decode_utf8(substr($bytes, $pos+3+$nameLen+1, $refLen)) : undef;
 		push @ents, bless [ $code, $name, $ref ], __PACKAGE__.'::Entry';
 		$pos= $end;
 	}

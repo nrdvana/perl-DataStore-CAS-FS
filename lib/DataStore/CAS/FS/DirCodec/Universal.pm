@@ -8,7 +8,7 @@ use JSON 2.53 ();
 
 use parent 'DataStore::CAS::FS::DirCodec';
 
-require DataStore::CAS::FS::NonUnicode;
+require DataStore::CAS::FS::InvalidUTF8;
 require DataStore::CAS::FS::DirEnt;
 
 our $VERSION= 1.0000;
@@ -42,9 +42,9 @@ a sequence of bytes which is not a valid Unicode string.  While the high-ascii
 bytes of these filenames could be encoded as unicode code-points, this would
 create an ambiguity with the names that actually were Unicode.  Instead, I
 wrap values which are intended to be a string of octets in an instance of
-L<DataStore::CAS::Dir::NonUnicode>, which gets written into JSON as
+L<DataStore::CAS::Dir::InvalidUTF8>, which gets written into JSON as
 
-  C<{ "*NonUnicode*": $bytes_as_codepoints }>
+  C<{ "*InvalidUTF8*": $bytes_as_codepoints }>
 
 Any attribute which contains bytes >= 0x80 and which does not have Perl's
 unicode flag set will be encoded this way, so that it comes back as it went in.
@@ -102,7 +102,7 @@ sub encode {
 		." \"entries\":[\n";
 	for (@entries) {
 		# If any of our fields are a byte string that is not valid unicode,
-		# We wrap them with "NonUnicode" objects.
+		# We wrap them with "InvalidUTF8" objects.
 		#_preserve_octets({}) for values %$_;
 		$ret .= $enc->encode($_).",\n"
 	}
@@ -114,7 +114,7 @@ sub encode {
 sub _preserve_octets {
 	my $r= ref $_;
 	if (!$r) {
-		$_= DataStore::CAS::FS::NonUnicode->new($_)
+		$_= DataStore::CAS::FS::InvalidUTF8->new($_)
 			if !utf8::is_utf8($_) && !utf8::decode($_);
 	} else {
 		croak "Recursion within DirEnt data" if $_[0]{refaddr($_)}++;
@@ -153,7 +153,7 @@ sub decode {
 	}
 
 	my $dec= JSON->new()->utf8->canonical->convert_blessed;
-	DataStore::CAS::FS::NonUnicode->add_json_filter($dec, 1);
+	DataStore::CAS::FS::InvalidUTF8->add_json_filter($dec, 1);
 	my $data= $dec->decode($bytes);
 	defined $data->{metadata} && ref($data->{metadata}) eq 'HASH'
 		or croak "Directory data is missing 'metadata'";
