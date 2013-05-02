@@ -127,6 +127,12 @@ directories will have this key, but any time the library knows it is writing
 an empty directory, it will use this value instead of recalculating the hash
 of an empty dir.
 
+=head2 dir_cache
+
+Read-only.  A DataStore::CAS::FS::DirCache object which holds onto recently
+used directory objects.  This object can be used in multiple CAS::FS objects
+to make the most of the cache.
+
 =cut
 
 has store             => ( is => 'ro', required => 1, isa => \&_validate_cas );
@@ -685,6 +691,10 @@ sub touch {
 
 Convenience method to remove the directory entry at C<path>.
 
+=head2 rmdir
+
+Alias for unlink
+
 =cut
 
 sub unlink {
@@ -1001,11 +1011,11 @@ systems, like modern Windows, operate on the idea that everything is Unicode
 and some backward-compatible APIs exist which can represent the Unicode as
 Latin1 or whatnot on a best-effort basis.  I think the "Unicode everywhere"
 philosophy is arguably a better way to go, but as this tool is primarily
-designed with Unix in mind, and it is intend for saving backups of real
+designed with Unix in mind, and since it is intended for saving backups of real
 filesystems, it needs to be able to accurately store exactly what it find in
 the filesystem.  Essentially this means it neeeds to be *able* to store
 invalid UTF-8 sequences, -or- encode the octets as unicode codepoints up to
-0xFF and later know to then write them out to the filesystem as octets instead
+0xFF, and later know to write them out to the filesystem as octets instead
 of UTF-8.
 
 =head2 Use Cases
@@ -1035,7 +1045,12 @@ in UTF-8).  "readdir" will report these as the strings I've just written, with
 the unicode flag I<off>.  Modern Unix will render the first as a "?" and the
 other as the U with umlaut, because it expects UTF-8 in the filesystem.
 
-If a user is *unaware* of unicode issues, I argue it is better to pass around
+If you have the perl string "\xDC" with the UTF-8 flag off, and you try
+creating that file, it will create the file names "\xDC".  However if you have
+that same logical string with the UTF-8 flag on, it will become the file name
+"\x3C\x9C"!
+
+If a user is *unaware* of unicode issues, it might be better to pass around
 strings of octets.  Example: the user is in "/home/\xC3\x9C", and calls "Cwd".
 They get the string of octets C<"/home/\xD0">.  They then concatenate this
 string with unicode C<"\x{1234}">.  Perl combines the two as
@@ -1044,18 +1059,16 @@ from octets to unicode codepoints.  When the user tries opening the file, it
 surprises them with "No such file or directory", because it tried opening
 C<"/home/\xC3\x83\xC2\x9C/\xE1\x88\xB4">.
 
-On the other hand, it would be more correct to define a class of "::FileName",
-which when concatenated with a non-unicode string containing high bytes, would
-encode itself as UTF-8 before returning.  This could have lots of unexpected
-results though...
-
-On Windows, perl is just generally broken for high-unicode filenames.
-The octets approach works just fine for pure-ascii, meanwhile.  Those who need
-unicode support will have found it from other modules, and when using this
-module will also likely look for available flags to enable unicode.  However,
-it might be good to emit a warning if a unicode flag isn't set.
+On Windows, perl is just generally B<broken> for high-unicode filenames.
+Pure-ascii works fine, but ascii is a non-issue either way.  Those who need
+unicode support will have found it from other modules, and be looking for this
+section of documentation.
 
 Interesting reading for Windows: L<http://www.perlmonks.org/?node_id=526169>
+
+However, all this conjecture assumes a person is trying to read and write
+virtual items out to their filesystem.  Since this module also provides that,
+maybe people will use the ready-built implementation and this is a non-issue.
 
 =head2 Storage Formats
 
@@ -1068,23 +1081,28 @@ again, perl will mangle it when you attempt to open the file, and fail.  It
 also means that unicode-as-octets filenames will take extra bytes to encode.
 
 The other option is to use a plain unicode string where possible, but names
-which are not valid UTF-8 are written as C<{"bytes"=>$base64}>.
+which are not valid UTF-8 are encoded as structures which can be restored
+when decoding the JSON.
 
 =head2 Conclusion
 
-If the user is aware-enough to utf8::decode their file names, then they should
-find it just as logical to utf8::decode the filenames from this module before
-using them, or read this module's documentation to find the "unicode_filenames"
-option.
+In the end, I came up with a module called L<DataStore::CAS::FS::InvalidUTF8>.
+It takes a filename in native encoding, and tries to parse it as UTF-8.  If
+it succeeds, it returns the string.  If it fails, it returns the string
+wrapped by InvalidUTF8, with special concatenation and comparison operators.
+
+The directory coders are written to properly save and restore these objects.
 
 The scanner for Windows platforms will read the UTF-16 from the Windows API,
 and convert it to UTF-8 to match the behavior on Unix.  The Extractor on
 Windows will reverse this process.  Extracting files with invalid UTF-8 on
 Windows will fail.
 
-The default storage format will use a Unicode-only format, and a special
-notation to represent strings which are not unicode.  Other formats might
-keep track of the unicode status of individual fields.
+The default storage format uses a Unicode-only format, and a special notation
+to represent strings which are not unicode (See
+L<DataStore::CAS::FS::InvalidUTF8/TO_JSON|TO_JSON in InvalidUtf8>.
+Other formats (Minimal and Unix) always store octets, and then re-detect UTF-8
+when decoding the directory.
 
 =head1 SEE ALSO
 
