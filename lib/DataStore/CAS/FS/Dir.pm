@@ -5,7 +5,7 @@ use warnings;
 use Carp;
 use Try::Tiny;
 
-our $VERSION= 0.0100;
+our $VERSION= '0.0100';
 
 # ABSTRACT: Object representing a directory of file entries, indexed by filename.
 

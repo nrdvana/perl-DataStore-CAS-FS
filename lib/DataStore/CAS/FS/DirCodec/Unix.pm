@@ -11,7 +11,7 @@ require DataStore::CAS::FS::Dir;
 
 use parent 'DataStore::CAS::FS::DirCodec';
 
-our $VERSION= 0.0100;
+our $VERSION= '0.0100';
 
 __PACKAGE__->register_format(unix => __PACKAGE__);
 
@@ -41,7 +41,7 @@ shouldn't ever be a problem.
 
   $serialized= $class->encode( \@entries, \%metadata )
 
-See L<< DirCodec-E<gt>encode | DataStore::CAS::FS::DirCodec/encode >> for details.
+See L<DirCodec-E<gt>encode|DataStore::CAS::FS::DirCodec/encode> for details.
 
 =cut
 
@@ -114,7 +114,7 @@ sub encode {
 
   my $dir= $class->decode( \%params )
 
-See L<< DirCodec-E<gt>load | DataStore::CAS::FS::DirCodec/load >> for details on C<%params>.
+See L<DirCodec-E<gt>load|DataStore::CAS::FS::DirCodec/load> for details on C<%params>.
 
 =cut
 

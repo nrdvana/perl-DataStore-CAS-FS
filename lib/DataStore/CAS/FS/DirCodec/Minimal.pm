@@ -10,7 +10,7 @@ require DataStore::CAS::FS::Dir;
 
 use parent 'DataStore::CAS::FS::DirCodec';
 
-our $VERSION= 0.0100;
+our $VERSION= '0.0100';
 
 __PACKAGE__->register_format('minimal' => __PACKAGE__);
 __PACKAGE__->register_format('' => __PACKAGE__);
@@ -84,7 +84,7 @@ sub encode {
 
 Reverses C<encode>, to create a Dir object.
 
-See L<< DirCodec-E<gt>load | DataStore::CAS::FS::DirCodec/load >> for details on C<%params>.
+See L<DirCodec-E<gt>load|DataStore::CAS::FS::DirCodec/load> for details on C<%params>.
 
 =cut
 
