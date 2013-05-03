@@ -78,7 +78,7 @@ subtest many_dirent => sub {
 	done_testing;
 };
 
-sub non_unicode { bless \$_[0], 'DataStore::CAS::FS::InvalidUTF8' }
+sub non_unicode { my $x= shift; bless \$x, 'DataStore::CAS::FS::InvalidUTF8' }
 
 subtest unicode => sub {
 	my @entries= (

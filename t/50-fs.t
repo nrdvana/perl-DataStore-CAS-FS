@@ -1,7 +1,6 @@
 #! /usr/bin/env perl -T
 use strict;
 use warnings;
-use Carp::Always;
 
 use Test::More;
 
