@@ -173,6 +173,27 @@ subtest tree_iterator => sub {
 	is_deeply( \@actual, \@expected, 'iterate subtree from path object' )
 		or diag "Expected: ".join(' ', @expected)."\nActual: ".join(' ', @actual);
 
+	# Reset, and should give same result
+	@actual= ();
+	$iter->reset;
+	while (defined (my $x= $iter->())) {
+		push @actual, $x->resolved_path_str
+	}
+	is_deeply( \@actual, \@expected, 'iteration is same after ->reset()' )
+		or diag "Expected: ".join(' ', @expected)."\nActual: ".join(' ', @actual);
+
+	# Simulate a --max-depth using the skip_dir method on the iterator
+	@actual= ();
+	$iter->reset;
+	while (defined (my $x= $iter->())) {
+		push @actual, $x->resolved_path_str;
+		$iter->skip_dir
+			if @{$x->path_dirents} >= 6 && $x->type eq 'dir';
+	}
+	@expected= grep { (split m|/|) <= 6 } @expected;
+	is_deeply( \@actual, \@expected, 'iteration skipped properly' )
+		or diag "Expected: ".join(' ', @expected)."\nActual: ".join(' ', @actual);
+	
 	done_testing;
 };
 
