@@ -1,0 +1,15 @@
+0.0101   2013-05-03
+
+- Changed version numbers to strings (used integers by accident)
+
+- Many fixes in POD notation, and documentation in general.
+
+- Removed reference to Carp::Always (was only for debugging)
+
+- Fixed bug in testcase code where I was blessing a reference to a constant
+  string.  Some perl versions didn't like this.
+
+0.0100   2013-05-01
+
+- Initial version.  Directory encoding and decoding is fully functional,
+  resolve_path works well, and set_path and update_path seem to be working.
