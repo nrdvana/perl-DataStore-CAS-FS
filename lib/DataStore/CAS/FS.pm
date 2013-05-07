@@ -6,7 +6,7 @@ use Try::Tiny 0.11;
 use File::Spec 3.33;
 use DataStore::CAS 0.01;
 
-our $VERSION= '0.0100';
+our $VERSION= '0.0200';
 
 require DataStore::CAS::FS::Dir;
 require DataStore::CAS::FS::DirCodec::Universal;
@@ -368,7 +368,7 @@ given an argument in C<$_> of type L<Path|/"PATH OBJECTS">.
 sub tree_iterator {
 	my $self= shift;
 	my %p= (@_ == 1 && ref $_[0] eq 'HASH')? %{$_[0]} : @_;
-	return DataStore::CAS::FS::PathIterator->new(
+	return DataStore::CAS::FS::TreeIterator->new(
 		path => [],
 		%p,
 		fs => $self
@@ -630,9 +630,8 @@ sub _get_dir_entries {
 	}
 	if (my $t= $node->{subtree}) {
 		for (keys %$t) {
-			my $ent= $node->{entry};
-			ref $ent?
-				($dirents{$caseless? uc($_) : $_}= $ent)
+			ref $t->{$_}?
+				($dirents{$caseless? uc($_) : $_}= $t->{$_}{entry})
 				: delete $dirents{$caseless? uc($_) : $_};
 		}
 	}
@@ -642,7 +641,7 @@ sub _get_dir_entries {
 =head2 set_path
 
   $fs->set_path( \@path, $Dir_Entry \%optional_flags )
-  # always returns '1'
+  # returns 1, or dies
 
 Temporarily override a directory entry at @path.  If $Dir_Entry is false, this
 will cause @path to be unlinked.  If the name of Dir_Entry differs from the
@@ -691,25 +690,35 @@ sub set_path {
 
 	# replace the final entry, after applying defaults
 	if (!$newent) {
-		$newent= 0; # 0 means unlink
-	} elsif (ref $newent eq 'HASH' or !defined $newent->name or !defined $newent->type) {
-		my %ent_hash= %{ref $newent eq 'HASH'? $newent : $newent->as_hash};
-		$ent_hash{name}= $nodes->[-1]{entry}->name
-			unless defined $ent_hash{name};
-		defined $ent_hash{name} && length $ent_hash{name}
-			or die "No name for new dir entry";
-		$ent_hash{type}= $nodes->[-1]{entry}->type || 'file'
-			unless defined $ent_hash{type};
-		$newent= DataStore::CAS::FS::DirEnt->new(\%ent_hash);
+		# unlink request.  Ignore if node didn't exist.
+		return unless defined $nodes->[-1]{entry}->type;
+		# Can't unlink the root node
+		croak "Can't unlink root node"
+			unless @$nodes > 1;
+		# Mark in prev node that this item is gone
+		my $key= $self->case_insensitive? uc $nodes->[-1]{entry}->name : $nodes->[-1]{entry}->name;
+		pop @$nodes;
+		$nodes->[-1]{subtree}{$key}= 0;
+	} else {
+		if (ref $newent eq 'HASH' or !defined $newent->name or !defined $newent->type) {
+			my %ent_hash= %{ref $newent eq 'HASH'? $newent : $newent->as_hash};
+			$ent_hash{name}= $nodes->[-1]{entry}->name
+				unless defined $ent_hash{name};
+			defined $ent_hash{name} && length $ent_hash{name}
+				or die "No name for new dir entry";
+			$ent_hash{type}= $nodes->[-1]{entry}->type || 'file'
+				unless defined $ent_hash{type};
+			$newent= DataStore::CAS::FS::DirEnt->new(\%ent_hash);
+		}
+		$nodes->[-1]{entry}= $newent;
 	}
-	$nodes->[-1]{entry}= $newent;
 	$self->_apply_overrides($nodes);
 }
 
 =head2 update_path
 
-  $fs->update_path( \@path, \%changes, \%optional_flags )
-  $fs->update_path( \@path, \@changes, \%optional_flags )
+  $fs->update_path( \@path, $changes, \%optional_flags )
+  # returns 1, or dies
 
 Like L</set_path>, but it applies a hashref (or arrayref) of $changes to the
 directory entry which exists at the named path.  Use this to update a few
@@ -1058,14 +1067,14 @@ See L</tree_iterator>.
 sub iterator {
 	my $self= shift;
 	my %p= (@_ == 1 && ref $_[0] eq 'HASH')? %{$_[0]} : @_;
-	return DataStore::CAS::FS::PathIterator->new(
+	return DataStore::CAS::FS::TreeIterator->new(
 		%p,
 		fs => $self->filesystem,
 		path => $self->path_names
 	);
 }
 
-package DataStore::CAS::FS::PathIterator;
+package DataStore::CAS::FS::TreeIterator;
 use strict;
 use warnings;
 use Carp;

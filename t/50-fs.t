@@ -89,6 +89,12 @@ subtest resolve_path => sub {
 	done_testing;
 };
 
+subtest dir_listing => sub {
+	my $cas= new_ok('DataStore::CAS::FS', [ store => $sto, root => $rootEntry ], 'create file view of cas' );
+	my @expected= qw( L1 L2 e f1 f2 );
+	is_deeply( [ $cas->readdir('a/b/c/d') ], \@expected, 'readdir /a/b/c/d' );
+	done_testing;
+};
 
 subtest alter_path => sub {
 	my $cas= new_ok('DataStore::CAS::FS', [ store => $sto, root => $rootEntry ], 'create file view of cas' );
@@ -103,9 +109,19 @@ subtest alter_path => sub {
 	isnt( $cas->resolve_path('a/b')->[-1]->ref, 'root.a.b', 'new dir "a/b"' );
 	is( $cas->resolve_path('a/b/c')->[-1]->ref, 'root.a.b.c.d', 'same dir "a/b/c"' );
 	is( $cas->resolve_path('a/b/f')->[-1]->ref, 'root.a.b.f', 'same dir "a/b/f"' );
+	
+	$cas->unlink('a');
+	my @expected= ('f1','f2');
+	my @actual= $cas->readdir('/');
+	is_deeply( \@actual, \@expected, 'unlink dir' );
+
+	$cas->touch('a/b', {mkdir => 1});
+	@expected= ('b');
+	@actual= $cas->readdir('a');
+	is_deeply( \@actual, \@expected, 'recreate dir' );
+	
 	done_testing;
 };
-
 
 subtest path_objects => sub {
 	my $cas= new_ok('DataStore::CAS::FS', [ store => $sto, root => $rootEntry ], 'create file view of cas' );
@@ -115,14 +131,6 @@ subtest path_objects => sub {
 	isa_ok( $path= $cas->path('a','b','c','d')->path('..','..','f','i','j','f1'), 'DataStore::CAS::FS::Path' );
 	ok( $handle= $path->open );
 	is( do { local $/= undef; scalar <$handle> }, 'sdlfshldkjflskdfjslkdjf' );
-	done_testing;
-};
-
-
-subtest dir_listing => sub {
-	my $cas= new_ok('DataStore::CAS::FS', [ store => $sto, root => $rootEntry ], 'create file view of cas' );
-	my @expected= qw( L1 L2 e f1 f2 );
-	is_deeply( [ $cas->readdir('a/b/c/d') ], \@expected, 'readdir /a/b/c/d' );
 	done_testing;
 };
 
