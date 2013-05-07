@@ -150,7 +150,7 @@ subtest tree_iterator => sub {
 	_append_sorted_paths(\@expected, '', $tree);
 	my @actual;
 	while (defined (my $x= $iter->())) {
-		push @actual, $x->resolved_path_str
+		push @actual, $x->resolved_canonical_path;
 	}
 	is_deeply( \@actual, \@expected, 'iterate tree in order' )
 		or diag "Expected: ".join(' ', @expected)."\nActual: ".join(' ', @actual);
@@ -160,7 +160,7 @@ subtest tree_iterator => sub {
 	$iter= $cas->tree_iterator(path => '/a/b');
 	@actual= ();
 	while (defined (my $x= $iter->())) {
-		push @actual, $x->resolved_path_str
+		push @actual, $x->resolved_canonical_path;
 	}
 	is_deeply( \@actual, \@expected, 'iterate subtree in order' )
 		or diag "Expected: ".join(' ', @expected)."\nActual: ".join(' ', @actual);
@@ -168,7 +168,7 @@ subtest tree_iterator => sub {
 	$iter= $cas->path('a','b')->iterator();
 	@actual= ();
 	while (defined (my $x= $iter->())) {
-		push @actual, $x->resolved_path_str
+		push @actual, $x->resolved_canonical_path;
 	}
 	is_deeply( \@actual, \@expected, 'iterate subtree from path object' )
 		or diag "Expected: ".join(' ', @expected)."\nActual: ".join(' ', @actual);
@@ -177,7 +177,7 @@ subtest tree_iterator => sub {
 	@actual= ();
 	$iter->reset;
 	while (defined (my $x= $iter->())) {
-		push @actual, $x->resolved_path_str
+		push @actual, $x->resolved_canonical_path;
 	}
 	is_deeply( \@actual, \@expected, 'iteration is same after ->reset()' )
 		or diag "Expected: ".join(' ', @expected)."\nActual: ".join(' ', @actual);
@@ -186,7 +186,7 @@ subtest tree_iterator => sub {
 	@actual= ();
 	$iter->reset;
 	while (defined (my $x= $iter->())) {
-		push @actual, $x->resolved_path_str;
+		push @actual, $x->resolved_canonical_path;
 		$iter->skip_dir
 			if @{$x->path_dirents} >= 6 && $x->type eq 'dir';
 	}

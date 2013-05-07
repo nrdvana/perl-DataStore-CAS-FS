@@ -6,7 +6,7 @@ use Try::Tiny 0.11;
 use File::Spec 3.33;
 use DataStore::CAS 0.01;
 
-our $VERSION= '0.0200';
+our $VERSION= '0.011000';
 
 require DataStore::CAS::FS::Dir;
 require DataStore::CAS::FS::DirCodec::Universal;
@@ -923,6 +923,18 @@ Convenience accessor for final element of path_dirents
 
 Convenience accessor for the C<type> field of the final element of C<path_dirents>
 
+=head2 name
+
+Convenience accessor for the C<name> field of the final element of C<path_dirents>
+
+=head2 depth
+
+Convenience accessor for the number of elements in C<path_dirents> minus one.
+The root entry has a depth of 0, C<"/a"> is a depth of one, and so on.
+
+Note that this is counting the resolved path (after symlinks), not the logical
+requested path.
+
 =cut
 
 # main attributes
@@ -936,38 +948,23 @@ sub path_dirent_list { @{$_[0]->path_dirents} }
 sub dirent           { $_[0]->path_dirents->[-1] }
 sub type             { $_[0]->path_dirents->[-1]->type }
 sub name             { $_[0]->path_dirents->[-1]->name }
+sub depth            { @{$_[0]->path_dirents} - 1 }
 
-=head2 path_str
+=head2 resolved_canonical_path
 
-  $fs->path("foo","..","bar","")
-  # returns "/foo/../bar/"
-
-The path_name in UNIX absolute path notation, with "." and "" resolved.
-
-=cut
-
-sub path_str {
-	my $self= shift;
-	$self->{path_string}= '/'.join('/', grep { length; } @{$self->path_names})
-		unless defined $self->{path_string};
-	$self->{path_string};
-}
-
-=head2 resolved_path_str
-
-  $fs->path("foo","..","bar","")
+  $fs->path("foo","..","bar","")->resolved_canonical_path
   # where /bar is a symlink to /baz
   # returns "/baz"
 
-The path_name in UNIX absolute path notation, with '.', '..', '' and symlinks resolved.
+The path_dirents in UNIX absolute path notation, with '.', '..', '' and symlinks resolved.
 
 =cut
 
-sub resolved_path_str {
+sub resolved_canonical_path {
 	my $self= shift;
-	$self->{resolved_path_str}= '/'.join('/', grep { length; } map { $_->name } @{$self->path_dirents})
-		unless defined $self->{resolved_path_str};
-	$self->{resolved_path_str};
+	$self->{resolved_canonical_path}= '/'.join('/', grep { length; } map { $_->name } @{$self->path_dirents})
+		unless defined $self->{resolved_canonical_path};
+	$self->{resolved_canonical_path};
 }
 
 =head2 resolve
