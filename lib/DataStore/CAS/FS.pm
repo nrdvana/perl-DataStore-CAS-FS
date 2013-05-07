@@ -345,6 +345,37 @@ sub path {
 		'DataStore::CAS::FS::Path';
 }
 
+
+=head2 tree_iterator
+
+  $iter= $fs->tree_iterator( %optional_flags )
+
+With no flags, creates a tree-iterator which iterates the entire tree
+depth-first, listing directories before their contents.
+
+When the C<path> flag is given, iterates the named path and everything
+under it (if it is a directory), or croaks if it doesn't exist.
+
+If the 'filter' flag is given, calls C<&{$flags{filter}}> for each item, with
+$_ set to a L<Path|/"PATH OBJECTS"> object.  This filter works just like the
+coderef passed to C<grep>.
+
+Flags may contain C<filter>, which is a coderef like used in C<grep>, which is
+given an argument in C<$_> of type L<Path|/"PATH OBJECTS">.
+
+=cut
+
+sub tree_iterator {
+	my $self= shift;
+	my %p= (@_ == 1 && ref $_[0] eq 'HASH')? %{$_[0]} : @_;
+	return DataStore::CAS::FS::PathIterator->new(
+		path => [],
+		%p,
+		fs => $self
+	);
+}
+
+
 =head2 resolve_path
 
   $path_array= $fs->resolve_path( \@path_names, \%optional_flags )
@@ -418,7 +449,7 @@ sub resolve_path {
 	my ($self, $path, $flags)= @_;
 	$flags ||= {};
 	
-	my $ret= $self->_resolve_path($path, { follow_symlinks => 1, %$flags });
+	my $ret= $self->_resolve_path(undef, $path, { follow_symlinks => 1, %$flags });
 	
 	# Array means success, scalar means error.
 	if (ref($ret) eq 'ARRAY') {
@@ -435,20 +466,24 @@ sub resolve_path {
 }
 
 sub _resolve_path {
-	my ($self, $path, $flags)= @_;
+	my ($self, $nodes, $path_names, $flags)= @_;
 
-	my @path= ref($path)? @$path : File::Spec->splitdir($path);
-	my @nodes= ( $self->_path_overrides || { entry => $self->root_entry } );
+	my @path= ref($path_names)? @$path_names : File::Spec->splitdir($path_names);
+	$nodes ||= [];
+	push @$nodes, ($self->_path_overrides || { entry => $self->root_entry })
+		unless @$nodes;
 	
-	return "Root directory must be a directory"
-		unless $nodes[0]{entry}->type eq 'dir';
-
-	my @mkdir_defaults= %{$flags->{mkdir_defaults}}
-		if ref $flags->{mkdir_defaults};
-	push @mkdir_defaults, type => 'dir', ref => undef;
+	my $mkdir_defaults;
+	sub _build_mkdir_defaults {
+		my $flags= shift;
+		my @ret= %{$flags->{mkdir_defaults}}
+			if defined $flags->{mkdir_defaults};
+		push @ret, type => 'dir', ref => undef;
+		\@ret
+	}
 
 	while (@path) {
-		my $ent= $nodes[-1]{entry};
+		my $ent= $nodes->[-1]{entry};
 		my $dir;
 
 		# Support for "symlink" is always UNIX-based (or compatible)
@@ -461,10 +496,10 @@ sub _resolve_path {
 				or return 'Invalid symbolic link "'.$ent->name.'"';
 
 			unshift @path, split('/', $target, -1);
-			pop @nodes;
+			pop @$nodes;
 			
 			# If an absolute link, we start over from the root
-			@nodes= ( $nodes[0] )
+			@$nodes= ( $nodes->[0] )
 				if $path[0] eq '';
 
 			next;
@@ -474,7 +509,7 @@ sub _resolve_path {
 			return 'Cannot descend into directory entry "'.$ent->name.'" of type "'.$ent->type.'"'
 				unless ($flags->{mkdir}||0) > 1;
 			# Here, mkdir flag converts entry into a directory
-			$nodes[-1]{entry}= $ent->clone(@mkdir_defaults);
+			$nodes->[-1]{entry}= $ent->clone(@{ $mkdir_defaults ||= _build_mkdir_defaults($flags)});
 		}
 
 		# Get the next path component, ignoring empty and '.'
@@ -485,29 +520,29 @@ sub _resolve_path {
 		# This is the same way the kernel does it, but perhaps shell behavior is preferred...
 		if ($name eq '..') {
 			return "Cannot access '..' at root directory"
-				unless @nodes > 1;
-			pop @nodes;
+				unless @$nodes > 1;
+			pop @$nodes;
 			next;
 		}
 
 		# If this directory has an in-memory override for this name, use it
 		my $subnode;
-		if ($nodes[-1]{subtree}) {
+		if ($nodes->[-1]{subtree}) {
 			my $key= $self->case_insensitive? uc $name : $name;
-			$subnode= $nodes[-1]{subtree}{$key};
+			$subnode= $nodes->[-1]{subtree}{$key};
 		}
 		if (!defined $subnode) {
 			# Else we need to find the name within the current directory
 
 			# load it if it isn't cached
-			if (!defined $nodes[-1]{dir} && defined $ent->ref) {
-				defined ( $nodes[-1]{dir}= $self->get_dir($ent->ref) )
+			if (!defined $nodes->[-1]{dir} && defined $ent->ref) {
+				defined ( $nodes->[-1]{dir}= $self->get_dir($ent->ref) )
 					or return 'Failed to open directory "'.$ent->name.' ('.$ent->ref.')"';
 			}
 
 			# If we're working on an available directory, try loading it
-			my $subent= $nodes[-1]{dir}->get_entry($name)
-				if defined $nodes[-1]{dir};
+			my $subent= $nodes->[-1]{dir}->get_entry($name)
+				if defined $nodes->[-1]{dir};
 			$subnode= { entry => $subent }
 				if defined $subent;
 		}
@@ -520,23 +555,88 @@ sub _resolve_path {
 					entry => DataStore::CAS::FS::DirEnt->new(
 						name => $name,
 						# It is a directory if there are more path components to resolve.
-						(@path? @mkdir_defaults : ())
+						(@path? @{ $mkdir_defaults ||= _build_mkdir_defaults($flags)} : ())
 					)
 				};
 			}
 			# Else it doesn't exist and we fail.
 			else {
-				my $dir_path= File::Spec->catdir(map { $_->{entry}->name } @nodes);
+				my $dir_path= File::Spec->catdir(map { $_->{entry}->name } @$nodes);
 				return "Directory \"$dir_path\" is not present in storage"
-					unless defined $nodes[-1]{dir};
+					unless defined $nodes->[-1]{dir};
 				return "No such directory entry \"$name\" at \"$dir_path\"";
 			}
 		}
 
-		push @nodes, $subnode;
+		push @$nodes, $subnode;
 	}
 	
-	\@nodes;
+	$nodes;
+}
+
+=head2 get_dir_entries
+
+  $dirent_array= $fs->get_dir_entries( \@path )
+
+Returns an array of directory entries for the specified path.
+
+This differs from C<$fs-E<gt>path(@path)-E<gt>dir-E<gt>iterator> in that you
+see any changes that have been made via calls to C<set_path> or C<apply_path>.
+Calling C<iterator> on the directory object will only return what was recorded
+in the CAS.
+
+=head2 readdir
+
+  @names= $fs->readdir( \@path )
+
+Convenience method for L</get_dir_entries>, but returns an arrayref of
+I<names> (rather than L<DirEnt/DataStore::CAS::FS::DirEnt> objects) and
+returns a list when called in list context.
+
+=cut
+
+sub get_dir_entries {
+	my ($self, $path)= @_;
+	my $nodes= $self->_resolve_path(undef, $path);
+	ref $nodes
+		or croak $nodes;
+	return $self->_get_dir_entries($nodes->[-1]);
+}
+
+sub readdir {
+	my $self= shift;
+	my @names= map { $_->name } @{ $self->get_dir_entries(@_) };
+	return wantarray? @names : \@names;
+}
+
+# This method combines the original directory with its overrides.
+sub _get_dir_entries {
+	my ($self, $node)= @_;
+	my $ent= $node->{entry};
+	croak "Can't get listing for non-directory"
+		unless $ent->type eq 'dir';
+	my %dirents;
+	# load dir if it isn't cached
+	if (!defined $node->{dir} && defined $ent->ref) {
+		defined ( $node->{dir}= $self->get_dir($ent->ref) )
+			or return 'Failed to open directory "'.$ent->name.' ('.$ent->ref.')"';
+	}
+	my $caseless= $self->case_insensitive;
+	if (defined $node->{dir}) {
+		my $iter= $node->{dir}->iterator;
+		my $dirent;
+		$dirents{$caseless? uc($dirent->name) : $dirent->name}= $dirent
+			while defined ($dirent= $iter->());
+	}
+	if (my $t= $node->{subtree}) {
+		for (keys %$t) {
+			my $ent= $node->{entry};
+			ref $ent?
+				($dirents{$caseless? uc($_) : $_}= $ent)
+				: delete $dirents{$caseless? uc($_) : $_};
+		}
+	}
+	return [ map { $dirents{$_} } sort keys %dirents ];
 }
 
 =head2 set_path
@@ -586,7 +686,7 @@ conceptually equivalent to C<< $fs= DataStore::CAS::FS->new( $fs->root_entry ) >
 sub set_path {
 	my ($self, $path, $newent, $flags)= @_;
 	$flags ||= {};
-	my $nodes= $self->_resolve_path($path, { follow_symlinks => 1, partial => 1, %$flags });
+	my $nodes= $self->_resolve_path(undef, $path, { follow_symlinks => 1, partial => 1, %$flags });
 	croak $nodes unless ref $nodes;
 
 	# replace the final entry, after applying defaults
@@ -620,7 +720,7 @@ attributes of a directory entry without overwriting the entire thing.
 sub update_path {
 	my ($self, $path, $changes, $flags)= @_;
 	$flags ||= {};
-	my $nodes= $self->_resolve_path($path, { follow_symlinks => 1, partial => 1, %$flags });
+	my $nodes= $self->_resolve_path(undef, $path, { follow_symlinks => 1, partial => 1, %$flags });
 	croak $nodes unless ref $nodes;
 
 	# update the final entry, after applying defaults
@@ -825,7 +925,7 @@ Convenience accessor for the C<type> field of the final element of C<path_ents>
 =cut
 
 # main attributes
-sub path_names     { $_[0]{path_names} }
+sub path_names     { $_[0]{path_names} || [ map { $_->name } @{$_[0]->path_ents} ] }
 sub path_ents      { $_[0]{path_ents} || $_[0]->resolve }
 sub filesystem     { $_[0]{filesystem} }
 
@@ -834,6 +934,39 @@ sub path_name_list { @{$_[0]->path_names} }
 sub path_ent_list  { @{$_[0]->path_ents} }
 sub final_ent      { $_[0]->path_ents->[-1] }
 sub type           { $_[0]->final_ent->type }
+
+=head2 path_str
+
+  $fs->path("foo","..","bar","")
+  # returns "/foo/../bar/"
+
+The path_name in UNIX absolute path notation, with "." and "" resolved.
+
+=cut
+
+sub path_str {
+	my $self= shift;
+	$self->{path_string}= '/'.join('/', grep { length; } @{$self->path_names})
+		unless defined $self->{path_string};
+	$self->{path_string};
+}
+
+=head2 resolved_path_str
+
+  $fs->path("foo","..","bar","")
+  # where /bar is a symlink to /baz
+  # returns "/baz"
+
+The path_name in UNIX absolute path notation, with '.', '..', '' and symlinks resolved.
+
+=cut
+
+sub resolved_path_str {
+	my $self= shift;
+	$self->{resolved_path_str}= '/'.join('/', grep { length; } map { $_->name } @{$self->path_ents})
+		unless defined $self->{resolved_path_str};
+	$self->{resolved_path_str};
+}
 
 =head2 resolve
 
@@ -874,18 +1007,136 @@ or dies trying.
 
   $handle= $path->open
 
-Alias for C<< $path->file->open >>
+Alias for C<< $path-E<gt>file-E<gt>open >>
 
 =cut
 
 sub file {
-	defined(my $hash= $_[0]->final_ent->ref)
-		or croak "Path is not a file";
-	$_[0]->filesystem->get($hash);
+	$_[0]{file} ||= do {
+		my $ent= $_[0]->final_ent;
+		$ent->type eq 'file' or croak "Path is not a file";
+		defined (my $hash= $ent->ref) or croak "File was not stored in CAS";
+		$_[0]->filesystem->get($hash);
+	};
 }
 
 sub open {
 	$_[0]->file->open
+}
+
+=head2 dir
+
+  $dir= $path->dir
+
+Convenience method for calling L</get_dir> on the file referred to by this
+path.  Dies if this path does not reference any content, or if it is not
+a directory.
+
+=cut
+
+sub dir {
+	$_[0]{dir} ||= do {
+		my $ent= $_[0]->final_ent;
+		$ent->type eq 'dir' or croak "Path is not a directory";
+		defined (my $hash= $ent->ref) or croak "Directory was not stored in CAS";
+		$_[0]->filesystem->get_dir($hash);
+	}
+}
+
+=head2 iterator
+
+  $iter= $path->iterator( %optional_flags )
+
+Convenience method for
+
+  $path->filesystem->tree_iterator( path => $path->path_names, %flags ).
+
+See L</tree_iterator>.
+
+=cut
+
+sub iterator {
+	my $self= shift;
+	my %p= (@_ == 1 && ref $_[0] eq 'HASH')? %{$_[0]} : @_;
+	return DataStore::CAS::FS::PathIterator->new(
+		%p,
+		fs => $self->filesystem,
+		path => $self->path_names
+	);
+}
+
+package DataStore::CAS::FS::PathIterator;
+use strict;
+use warnings;
+use Carp;
+
+sub _fields { $_[0]->($_[0]) }
+
+sub new {
+	my $class= shift;
+	my %self= (@_ == 1 && ref $_[0] eq 'HASH')? %{$_[0]} : @_;
+	defined $self{$_} || croak "'$_' is required"
+		for qw( path fs );
+
+	# _resolve_path returns a string on failure
+	my $x;
+	ref( $x= $self{fs}->_resolve_path(undef, $self{path}) )
+		or croak $x;
+	# maintain an array of resolved path nodes, and an array of
+	#  arrays of names-to-iterate for each directory
+	my @nodes= @$x;
+	my @dirstack= ([]) x @nodes;
+	push @{$dirstack[-1]}, $nodes[-1]->{entry}->name;
+
+	$self{path_nodes}= \@nodes;
+	$self{dirstack}= \@dirstack;
+
+	return bless sub {
+		return \%self if @_ && ref($_[1]) eq $class;
+		return undef unless @dirstack;
+		local $_;
+		do {
+			# back out of a directory hierarchy that we have finished
+			while (!@{$dirstack[-1]}) {
+				pop @dirstack; # back out of directory
+				pop @nodes;
+				return undef unless @dirstack;
+			}
+			# Iterate path leaf, by removing last leaf, and resolving using the
+			#  next name.
+			pop @nodes;
+			$self{fs}->_resolve_path(\@nodes, [ shift @{$dirstack[-1]} ] );
+			# Create path object
+			$_= bless {
+					path_ents  => [ map { $_->{entry} } @nodes ],
+					filesystem => $self{fs},
+				}, 'DataStore::CAS::FS::Path';
+			# Filter check
+		} while (defined $self{filter} && !&{$self{filter}});
+		# If a dir, push it onto the stack
+		if ($_->type eq 'dir') {
+			push @dirstack, [ map { $_->name } @{ $self{fs}->_get_dir_entries($nodes[-1]) } ];
+			push @nodes, undef;
+		}
+		return $_;
+	}, $class;
+}
+
+sub path_base {
+	my $self= $_[0]->($_[0]);
+	$self->{path_base};
+}
+
+sub reset {
+	my $self= $_[0]->($_[0]);
+	@{$self->{path}}= @{$self->{path_base}};
+	@{$self->{iter_stack}}= (sub { undef; }) x @{$self->{path}};
+}
+
+sub filter {
+	my $self= $_[0]->($_[0]);
+	$self->{filter}= $_[1] if @_ > 1;
+	$self->{filter};
 }
 
 package DataStore::CAS::FS::DirCache;

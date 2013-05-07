@@ -63,9 +63,9 @@ sub _buildTree {
 my $rootEntry= DataStore::CAS::FS::DirEnt->new( name => '', _buildTree($tree, 'root') );
 
 my $sto= new_ok('DataStore::CAS::Virtual', [ entries => \%content ], 'create virtual cas');
-my $cas= new_ok('DataStore::CAS::FS', [ store => $sto, root => $rootEntry ], 'create file view of cas' );
 
 subtest resolve_path => sub {
+	my $cas= new_ok('DataStore::CAS::FS', [ store => $sto, root => $rootEntry ], 'create file view of cas' );
 	is( $cas->resolve_path('/')->[-1], $rootEntry, 'resolve root abs' );
 	is( $cas->resolve_path('.')->[-1], $rootEntry, 'resolve current dir at root' );
 
@@ -89,9 +89,9 @@ subtest resolve_path => sub {
 	done_testing;
 };
 
-$cas= new_ok('DataStore::CAS::FS', [ store => $sto, root => $rootEntry ], 'create file view of cas' );
 
 subtest alter_path => sub {
+	my $cas= new_ok('DataStore::CAS::FS', [ store => $sto, root => $rootEntry ], 'create file view of cas' );
 	ok( $cas->update_path('a/b/c', { type => 'dir', ref => 'root.a.b.c.d' }), 'update path' );
 	isa_ok( $cas->_path_overrides, 'HASH', 'overrides initiated' );
 	is( $cas->resolve_path('/a/b/c')->[-1]->ref, 'root.a.b.c.d', 'directory is relinked' );
@@ -106,15 +106,65 @@ subtest alter_path => sub {
 	done_testing;
 };
 
-$cas= new_ok('DataStore::CAS::FS', [ store => $sto, root => $rootEntry ], 'create file view of cas' );
 
 subtest path_objects => sub {
+	my $cas= new_ok('DataStore::CAS::FS', [ store => $sto, root => $rootEntry ], 'create file view of cas' );
 	isa_ok( my $path= $cas->path('a','b','c','d','f1'), 'DataStore::CAS::FS::Path' );
 	ok( my $handle= $path->open );
 	is( do { local $/= undef; scalar <$handle> }, 'Blah Blah' );
 	isa_ok( $path= $cas->path('a','b','c','d')->path('..','..','f','i','j','f1'), 'DataStore::CAS::FS::Path' );
 	ok( $handle= $path->open );
 	is( do { local $/= undef; scalar <$handle> }, 'sdlfshldkjflskdfjslkdjf' );
+	done_testing;
+};
+
+
+subtest dir_listing => sub {
+	my $cas= new_ok('DataStore::CAS::FS', [ store => $sto, root => $rootEntry ], 'create file view of cas' );
+	my @expected= qw( L1 L2 e f1 f2 );
+	is_deeply( [ $cas->readdir('a/b/c/d') ], \@expected, 'readdir /a/b/c/d' );
+	done_testing;
+};
+
+sub _append_sorted_paths {
+	my ($result, $prefix, $node)= @_;
+	for (sort keys %$node) {
+		push @$result, $prefix.'/'.$_;
+		_append_sorted_paths($result, $prefix.'/'.$_, $node->{$_})
+			if ref $node->{$_} eq 'HASH';
+	}
+}
+
+subtest tree_iterator => sub {
+	my $cas= new_ok('DataStore::CAS::FS', [ store => $sto, root => $rootEntry ], 'create file view of cas' );
+	my $iter= $cas->tree_iterator;
+	my @expected= '/';
+	_append_sorted_paths(\@expected, '', $tree);
+	my @actual;
+	while (defined (my $x= $iter->())) {
+		push @actual, $x->resolved_path_str
+	}
+	is_deeply( \@actual, \@expected, 'iterate tree in order' )
+		or diag "Expected: ".join(' ', @expected)."\nActual: ".join(' ', @actual);
+
+	@expected= ('/a/b');
+	_append_sorted_paths(\@expected, '/a/b', $tree->{a}{b});
+	$iter= $cas->tree_iterator(path => '/a/b');
+	@actual= ();
+	while (defined (my $x= $iter->())) {
+		push @actual, $x->resolved_path_str
+	}
+	is_deeply( \@actual, \@expected, 'iterate subtree in order' )
+		or diag "Expected: ".join(' ', @expected)."\nActual: ".join(' ', @actual);
+
+	$iter= $cas->path('a','b')->iterator();
+	@actual= ();
+	while (defined (my $x= $iter->())) {
+		push @actual, $x->resolved_path_str
+	}
+	is_deeply( \@actual, \@expected, 'iterate subtree from path object' )
+		or diag "Expected: ".join(' ', @expected)."\nActual: ".join(' ', @actual);
+
 	done_testing;
 };
 
