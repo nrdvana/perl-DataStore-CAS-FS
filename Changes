@@ -1,3 +1,26 @@
+0.011000   2013-05-07
+
+- Switched to a 3-decimal version string.
+
+- Renamed accessors in Path objects from 'path_ent*' to 'path_dirent*', and
+  from 'final_ent' to 'dirent'.  This is an API change, but I don't think
+  anyone is using this module yet anyway.
+
+- Added $path->resolved_canonical_path convenience method to quickly get a
+  unix path string like "/a/b/c" from a $path object.
+  (mostly useful for filters)
+
+- Added other helpful accessors for oath objects: 'type', 'name', 'depth'.
+
+- Added $fs->get_dir_entries, $fs->readdir, and $path->readdir, which return
+  a list of directory entries *including* the current un-committed overrides.
+
+- Added $fs->tree_iterator, and $path->iterator, which runs a similar
+  operation to the unix 'find' command on the virtual filesystem.
+
+- Fixed the $fs->unlink feature, which was completely broken before, and added
+  test cases.
+
 0.0101   2013-05-03
 
 - Changed version numbers to strings (used integers by accident)
