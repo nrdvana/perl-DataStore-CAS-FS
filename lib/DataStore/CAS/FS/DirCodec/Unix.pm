@@ -4,10 +4,11 @@ use strict;
 use warnings;
 use Try::Tiny;
 use Carp;
-use JSON;
+use JSON 2.53 ();
 use Scalar::Util 'looks_like_number';
 require DataStore::CAS::FS::InvalidUTF8;
 require DataStore::CAS::FS::Dir;
+*decode_utf8= *DataStore::CAS::FS::InvalidUTF8::decode_utf8;
 
 use parent 'DataStore::CAS::FS::DirCodec';
 
@@ -64,20 +65,21 @@ sub encode {
 	my (%umap, %gmap);
 	my @entries= map {
 		my $e= ref $_ eq 'HASH'? $_ : $_->as_hash;
+		defined $e->{type}
+			or croak "'type' attribute is required";
 		my $code= $_TypeToCode{$e->{type}}
 			or croak "Unknown directory entry type: ".$e->{type};
+
 		my $name= $e->{name};
+		defined $name
+			or croak "'name' attribute is required";
+		_make_utf8($name)
+			or croak "'name' must be a unicode scalar or an InvalidUTF8 instance";
+
 		my $ref= $e->{ref};
-
-		!defined $name? croak "Missing required attribute 'name'"
-			: !ref $name? utf8::encode($name)
-			: ref($name)->can('is_non_unicode')? ($name= "$name")
-			: croak "'name' must be a scalar or a InvalidUTF8 instance";
-
-		!defined $ref? ($ref= '')
-			: !ref $ref? utf8::encode($ref)
-			: ref($ref)->can('is_non_unicode')? ($ref= "$ref")
-			: croak "'ref' must be a scalar or a InvalidUTF8 instance";
+		$ref= '' unless defined $ref;
+		_make_utf8($ref)
+			or croak "'ref' must be a unicode scalar or an InvalidUTF8 instance";
 
 		$umap{$e->{unix_uid}}= $e->{unix_user}
 			if defined $e->{unix_uid} && defined $e->{unix_user};
@@ -108,6 +110,25 @@ sub encode {
 	croak "Accidental unicode concatenation"
 		if utf8::is_utf8($ret);
 	$ret;
+}
+
+# Convert string in-place to utf-8 bytes, or return false.
+# A less speed-obfuscated version might read:
+#  my $str= shift;
+#  if (ref $str) {
+#    return 0 unless ref($str)->can('TO_UTF8');
+#    $_[0]= $str->TO_UTF8;
+#    return 1;
+#  } elsif (utf8::is_utf8($str)) {
+#    utf8::encode($_[0]);
+#    return 1;
+#  } else {
+#    return !($_[0] =~ /[\x7F-\xFF]/);
+#  }
+sub _make_utf8 {
+	ref $_[0]?
+		(ref($_[0])->can('TO_UTF8') && (($_[0]= $_[0]->TO_UTF8) || 1))
+		: &utf8::is_utf8 && (&utf8::encode || 1) || !($_[0] =~ /[\x80-\xFF]/);
 }
 
 =head2 decode

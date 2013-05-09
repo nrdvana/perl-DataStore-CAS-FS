@@ -2,14 +2,15 @@ package DataStore::CAS::FS::DirCodec::Universal;
 use 5.0080001;
 use strict;
 use warnings;
-use Carp;
 use Try::Tiny;
+use Carp;
 use JSON 2.53 ();
+require DataStore::CAS::FS::Dir;
+require DataStore::CAS::FS::DirEnt;
+require DataStore::CAS::FS::InvalidUTF8;
+*decode_utf8= *DataStore::CAS::FS::InvalidUTF8::decode_utf8;
 
 use parent 'DataStore::CAS::FS::DirCodec';
-
-require DataStore::CAS::FS::InvalidUTF8;
-require DataStore::CAS::FS::DirEnt;
 
 our $VERSION= '0.010000';
 
@@ -90,8 +91,10 @@ sub encode {
 	my @entries= sort { $a->{name} cmp $b->{name} }
 		map {
 			my %entry= %{ref $_ eq 'HASH'? $_ : $_->as_hash};
-			defined $entry{name} or croak "Can't serialize nameless directory entry: ".encode_json(\%entry);
-			defined $entry{type} or croak "Can't serialize typeless directory entry: ".encode_json(\%entry);
+			defined $entry{name} or croak "Can't serialize nameless directory entry: ".JSON::encode_json(\%entry);
+			defined $entry{type} or croak "Can't serialize typeless directory entry: ".JSON::encode_json(\%entry);
+			_is_jsonable($_) or croak "Can't serialize $entry{name}, all attributes must be unicode string, or have TO_JSON: '$_'"
+				for values %entry;
 			\%entry;
 		} @$entry_list;
 
@@ -107,6 +110,13 @@ sub encode {
 	# remove trailing comma
 	substr($ret, -2)= "\n" if @entries;
 	return $ret."]}";
+}
+
+sub _is_jsonable {
+	!defined($_[0]) || (ref $_[0]?
+		ref($_[0])->can("TO_JSON")
+		: &utf8::is_utf8 || !($_[0] =~ /[\x80-\xFF]/)
+		);
 }
 
 =head2 decode

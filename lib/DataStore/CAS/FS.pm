@@ -31,7 +31,7 @@ require DataStore::CAS::FS::DirCodec::Unix;
   
   # --- These pass through to the $cas module
   
-  $hash= $casfs->put("Blah"); 
+  $hash= $casfs->put("Blah");
   $hash= $casfs->put_file("./foo/bar/baz");
   $file= $casfs->get($hash);
   

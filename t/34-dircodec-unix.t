@@ -1,10 +1,26 @@
 #! /usr/bin/env perl -T
 use strict;
 use warnings;
+use Try::Tiny;
 use Test::More;
 
 use_ok('DataStore::CAS::FS::DirCodec::Unix') || BAIL_OUT;
 use_ok('DataStore::CAS::Virtual') || BAIL_OUT;
+
+sub decode_utf8 { goto &DataStore::CAS::FS::InvalidUTF8::decode_utf8; }
+
+sub dies_ok(&@) {
+	my ($code, $regex, $description)= @_;
+	my $err= '';
+	try { $code->(); } catch { $err= $_ };
+	like( $err, $regex, $description );
+}
+
+sub dir_encode {
+	my ($entries, $meta)= @_;
+	$meta ||= {};
+	return DataStore::CAS::FS::DirCodec::Unix->encode($entries, $meta);
+}
 
 my $cas= DataStore::CAS::Virtual->new();
 
@@ -81,13 +97,22 @@ subtest many_dirent => sub {
 sub non_unicode { my $x= shift; bless \$x, 'DataStore::CAS::FS::InvalidUTF8' }
 
 subtest unicode => sub {
+	dies_ok( sub{ dir_encode([ { name => 'x' } ]) }, qr/type/, 'dies without type' );
+	dies_ok( sub{ dir_encode([ { type => 'foo', name => 'x' } ]) }, qr/type/, 'dies with unknown type' );
+	dies_ok( sub{ dir_encode([ { type => 'file' } ]) }, qr/name/, 'dies without name' );
+
+	dies_ok( sub{ dir_encode([ { type => 'file', name => "\x80" } ]) }, qr/unicode/, 'dies with latin-1 name' );
+	dies_ok( sub{ dir_encode([ { type => 'file', name => "x", ref => "\x80" } ]) }, qr/unicode/, 'dies with latin-1 ref' );
+	
 	my @entries= (
-		{ type => 'file', name => "\xC4\x80\xC5\x90", size => '100000000000000000000000000', ref => '0000' },
-		{ type => 'file', name => non_unicode("\x80"), size => '1', ref => "\x{C4}\x{80}" },
+		{ type => 'file', name => "\x{101}", ref => "\x{101}" },
+		{ type => 'file', name => "\x{100}", ref => "\x{100}" },
+		{ type => 'file', name => decode_utf8("\x80"), ref => decode_utf8("\x80") },
 	);
 	my @expected= (
-		{ type => 'file', name => non_unicode("\x80"), size => '1', ref => "\x{C4}\x{80}" },
-		{ type => 'file', name => "\xC4\x80\xC5\x90", size => '100000000000000000000000000', ref => '0000' },
+		{ type => 'file', name => decode_utf8("\x80"), ref => decode_utf8("\x80") },
+		{ type => 'file', name => "\x{100}", ref => "\x{100}" },
+		{ type => 'file', name => "\x{101}", ref => "\x{101}" },
 	);
 	my %metadata= (
 		"\x{AC00}" => "\x{0C80}"

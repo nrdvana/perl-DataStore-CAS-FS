@@ -1,16 +1,29 @@
 #! /usr/bin/env perl -T
 use strict;
 use warnings;
-
+use Try::Tiny;
 use Test::More;
 use Digest;
 
 use_ok('DataStore::CAS::Virtual') || BAIL_OUT;
-use_ok('DataStore::CAS::FS::Dir') || BAIL_OUT;
-use_ok('DataStore::CAS::FS::DirCodec') || BAIL_OUT;
 use_ok('DataStore::CAS::FS::DirCodec::Universal') || BAIL_OUT;
 
 my $cas= DataStore::CAS::Virtual->new();
+
+sub decode_utf8 { goto &DataStore::CAS::FS::InvalidUTF8::decode_utf8; }
+
+sub dies_ok(&@) {
+	my ($code, $regex, $description)= @_;
+	my $err= '';
+	try { $code->(); } catch { $err= $_ };
+	like( $err, $regex, $description );
+}
+
+sub dir_encode {
+	my ($entries, $meta)= @_;
+	$meta ||= {};
+	return DataStore::CAS::FS::DirCodec::Universal->encode($entries, $meta);
+}
 
 subtest empty_dir => sub {
 	my $hash= DataStore::CAS::FS::DirCodec->put($cas, 'universal', [], {});
@@ -51,8 +64,6 @@ subtest many_dirent => sub {
 		{ type => 'file',     name => 'a',       size => 10,    ref => '0000',   foo => 42, sdlfjskldf => 'sldfjhlsdkfjh' },
 		{ type => 'pipe',     name => 'f',       size => 1,     ref => undef,    bar => 'xyz' },
 		{ type => 'blockdev', name => 'd',       size => 10000, ref => '1234',   },
-		{ type => 'file',     name => "\x{100}", size => 1,     ref => "\x{C4}\x{80}" },
-		{ type => 'file',     name => "\x{FF}",  size => 1,     ref => "\x{FF}"  },
 		{ type => 'file',     name => 'b',       size => 10,    ref => '1111',   1 => 2, 3 => 4, 5 => 6},
 		{ type => 'chardev',  name => 'e',       size => 0,     ref => '4321',   },
 		{ type => 'symlink',  name => 'c',       size => 10,    ref => 'fedcba', },
@@ -66,8 +77,6 @@ subtest many_dirent => sub {
 		{ type => 'chardev',  name => 'e',       size => 0,     ref => '4321',   },
 		{ type => 'pipe',     name => 'f',       size => 1,     ref => undef,    bar => 'xyz' },
 		{ type => 'socket',   name => 'g',       size => 1,     ref => undef,    },
-		{ type => 'file',     name => "\x{FF}",  size => 1,     ref => "\x{FF}"  },
-		{ type => 'file',     name => "\x{100}", size => 1,     ref => "\x{C4}\x{80}", },
 	);
 
 	ok( my $hash= DataStore::CAS::FS::DirCodec->put($cas, 'universal', \@entries, {}), 'encode' );
@@ -83,16 +92,23 @@ subtest many_dirent => sub {
 	done_testing;
 };
 
-sub non_unicode { my $x= shift; bless \$x, 'DataStore::CAS::FS::InvalidUTF8' }
-
 subtest unicode => sub {
+	dies_ok( sub{ dir_encode([ { name => 'x' } ]) }, qr/type/, 'dies without type' );
+	dies_ok( sub{ dir_encode([ { type => 'file' } ]) }, qr/name/, 'dies without name' );
+
+	dies_ok( sub{ dir_encode([ { type => 'file', name => "\x80" } ]) }, qr/unicode/, 'dies with latin-1 name' );
+	dies_ok( sub{ dir_encode([ { type => 'file', name => "x", ref => "\x80" } ]) }, qr/unicode/, 'dies with latin-1 ref' );
+	dies_ok( sub{ dir_encode([ { type => 'file', name => "x", misc => "\x80" } ]) }, qr/unicode/, 'dies with latin-1 field' );
+	
 	my @entries= (
-		{ type => 'file', name => "\xC4\x80\xC5\x90", size => '100000000000000000000000000', ref => '0000' },
-		{ type => 'file', name => non_unicode("\x80"), size => '1', ref => "\x{C4}\x{80}" },
+		{ type => 'file', name => "\x{101}", ref => "\x{101}" },
+		{ type => 'file', name => "\x{100}", ref => "\x{100}" },
+		{ type => 'file', name => decode_utf8("\x80"), ref => decode_utf8("\x80") },
 	);
 	my @expected= (
-		{ type => 'file', name => non_unicode("\x80"), size => '1', ref => "\x{C4}\x{80}" },
-		{ type => 'file', name => "\xC4\x80\xC5\x90", size => '100000000000000000000000000', ref => '0000' },
+		{ type => 'file', name => decode_utf8("\x80"), ref => decode_utf8("\x80") },
+		{ type => 'file', name => "\x{100}", ref => "\x{100}" },
+		{ type => 'file', name => "\x{101}", ref => "\x{101}" },
 	);
 	my %metadata= (
 		"\x{AC00}" => "\x{0C80}"
@@ -100,8 +116,9 @@ subtest unicode => sub {
 	my $expected_serialized= qq|CAS_Dir 09 universal\n|
 		.qq|{"metadata":{"\xEA\xB0\x80":"\xE0\xB2\x80"},\n|
 		.qq| "entries":[\n|
-		.qq|{"name":{"*InvalidUTF8*":"\xC2\x80"},"ref":"\xC3\x84\xC2\x80","size":"1","type":"file"},\n|
-		.qq|{"name":"\xC3\x84\xC2\x80\xC3\x85\xC2\x90","ref":"0000","size":"100000000000000000000000000","type":"file"}\n|
+		.qq|{"name":{"*InvalidUTF8*":"\xC2\x80"},"ref":{"*InvalidUTF8*":"\xC2\x80"},"type":"file"},\n|
+		.qq|{"name":"\xC4\x80","ref":"\xC4\x80","type":"file"},\n|
+		.qq|{"name":"\xC4\x81","ref":"\xC4\x81","type":"file"}\n|
 		.qq|]}|;
 	my $encoded= DataStore::CAS::FS::DirCodec::Universal->encode(\@entries, \%metadata);
 	ok( !utf8::is_utf8($encoded), 'encoded as bytes' );
