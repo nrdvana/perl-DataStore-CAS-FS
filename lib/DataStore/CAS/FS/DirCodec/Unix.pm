@@ -186,8 +186,8 @@ sub modify_ts       { $_[0][5] }
 sub unix_uid        { $_[0][6] }
 sub unix_gid        { $_[0][7] }
 sub unix_mode       { $_[0][8] }
-sub unix_ctime      { $_[0][9] }
-sub unix_atime      { $_[0][10] }
+sub metadata_ts     { $_[0][9] }
+sub access_ts       { $_[0][10] }
 sub unix_nlink      { $_[0][11] }
 sub unix_dev        { $_[0][12] }
 sub unix_inode      { $_[0][13] }
@@ -195,6 +195,8 @@ sub unix_blocksize  { $_[0][14] }
 sub unix_blockcount { $_[0][15] }
 
 *unix_mtime= *modify_ts;
+*unix_atime= *access_ts;
+*unix_ctime= *metadata_ts;
 sub unix_user       { my $self= shift; $self->_dirmeta->{umap}{ $self->unix_uid } }
 sub unix_group      { my $self= shift; $self->_dirmeta->{gmap}{ $self->unix_gid } }
 

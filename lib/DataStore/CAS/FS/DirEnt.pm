@@ -85,8 +85,9 @@ Ref is allowed to be undefined (regardless of type) if the data is not known.
 
 =head2 size
 
-The size of the referenced file.  In the case of directories, this is the size of
-the serialized directory, if one is referenced.  No other types should have a size.
+The size of the referenced file.  In the case of directories, this is the size
+of the serialized directory, if one is referenced.  No other types should have
+a size.
 
 =head2 create_ts
 
@@ -95,6 +96,15 @@ The timestamp of the creation of the file, expressed in Unix Epoch seconds.
 =head2 modify_ts
 
 The timestamp the file was last modified, expressed in Unix Epoch seconds.
+
+=head2 access_ts
+
+The timestamp the file was last acessed, expressed in Unix Epoch seconds.
+
+=head2 metadata_ts
+
+The timestamp the file's metadata (or content) was last modified, expressed in
+Unix Epoch seconds.
 
 =head2 unix_uid
 
@@ -162,19 +172,21 @@ BEGIN {
 			size
 			create_ts
 			modify_ts
+			access_ts
+			metadata_ts
 			unix_uid
 			unix_user
 			unix_gid
 			unix_group
 			unix_mode
-			unix_atime
-			unix_ctime
 			unix_dev
 			unix_inode
 			unix_nlink
 			unix_blocksize
 			unix_blockcount
 		);
+	*unix_atime= *access_ts;
+	*unix_ctime= *metadata_ts;
 	*unix_mtime= *modify_ts;
 }
 
