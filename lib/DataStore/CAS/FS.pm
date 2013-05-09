@@ -594,7 +594,8 @@ in the CAS.
 
 =head2 readdir
 
-  @names= $fs->readdir( \@path )
+  $names= $fs->readdir( \@path ); # returns arrayref in scalar context
+  @names= $fs->readdir( \@path ); # returns list in list context
 
 Convenience method for L</get_dir_entries>, but returns an arrayref of
 I<names> (rather than L<DirEnt/DataStore::CAS::FS::DirEnt> objects) and
@@ -774,11 +775,19 @@ sub _apply_overrides {
 
 Convenience method to create an empty directory at C<path>.
 
+Croaks if the path already exists and is not a directory.
+
 =cut
 
 sub mkdir {
 	my ($self, $path)= @_;
-	$self->set_path($path, { type => 'dir', ref => $self->hash_of_empty_dir });
+	my $nodes= $self->_resolve_path(undef, $path, { follow_symlinks => 1, mkdir => 1 });
+	croak $nodes unless ref $nodes;
+	unless (defined $nodes->[-1]{entry}->type) {
+		$nodes->[-1]{entry}= $nodes->[-1]{entry}->clone(type => 'dir');
+		$self->_apply_overrides($nodes);
+	}
+	1;
 }
 
 =head2 touch
@@ -1003,7 +1012,6 @@ Returns path object if the subpath exists.  Returns undef if not.
 
 =cut
 
-# methods
 sub resolve {
 	my $self= shift;
 	$self->{path_dirents}= $self->{filesystem}->resolve_path($self->{path_names}, @_)
@@ -1022,6 +1030,20 @@ sub path_if_exists {
 	my $self= shift;
 	my $path= $self->path(@_);
 	$path->resolve({no_die => 1})? $path : undef;
+}
+
+=head2 mkdir
+
+Creates a directory at this path, possibly creating parent directories as
+well.  Dies if the path passes through an existing DirEnt which is not a
+directory.
+
+=cut
+
+sub mkdir {
+	my $self= shift;
+	$self->{filesystem}->mkdir($self->path_names, @_);
+	$self;
 }
 
 =head2 file
@@ -1060,6 +1082,9 @@ Convenience method for calling L</get_dir> on the file referred to by this
 path.  Dies if this path does not reference any content, or if it is not
 a directory.
 
+Note that this directory object is immutable, from the CAS, and will not
+reflect any changes to the filesystem until C<$fs-E<gt>commit> is called.
+
 =cut
 
 sub dir {
@@ -1069,6 +1094,19 @@ sub dir {
 		defined (my $hash= $ent->ref) or croak "Directory was not stored in CAS";
 		$_[0]->filesystem->get_dir($hash);
 	}
+}
+
+=head2 readdir
+
+  $names= $path->readdir(); # returns arrayref in scalar context
+  @names= $path->readdir(); # returns list in list context
+
+Convenience method for C<$fs-E<gt>readdir($path->path_names)
+
+=cut
+
+sub readdir {
+	$_[0]{filesystem}->readdir($_[0]->path_names)
 }
 
 =head2 iterator

@@ -119,6 +119,12 @@ subtest alter_path => sub {
 	@expected= ('b');
 	@actual= $cas->readdir('a');
 	is_deeply( \@actual, \@expected, 'recreate dir' );
+
+	is_deeply( $cas->mkdir('a') && [ $cas->readdir('a') ], [ 'b' ], 'mkdir already existing' );
+	is_deeply( $cas->mkdir('a/c') && [ $cas->readdir('a') ], [ 'b', 'c' ], 'mkdir immediate' );
+	is_deeply( $cas->mkdir('a/c/x/y/z/A') && [ $cas->readdir('a/c/x/y/z') ], ['A'], 'mkdir deep' );
+	ok( $cas->commit, 'commit' );
+	is_deeply( [ $cas->readdir('a/c/x/y/z') ], ['A'], 'committed' );
 	
 	done_testing;
 };
@@ -138,6 +144,9 @@ subtest path_objects => sub {
 	is( $path->path_if_exists('m'), undef, 'path_if_exists from path object' );
 	isa_ok( $path->path_if_exists('b'), 'DataStore::CAS::FS::Path', 'path_if_exists from path object' );
 
+	$path= $cas->path("a/x/y/z")->mkdir();
+	is_deeply( [ $path->readdir ], [], 'empty dir' );
+	
 	done_testing;
 };
 
