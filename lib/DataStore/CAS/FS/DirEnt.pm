@@ -2,7 +2,7 @@ package DataStore::CAS::FS::DirEnt;
 use strict;
 use warnings;
 
-our $VERSION= '0.010000';
+our $VERSION= '0.011000';
 
 # ABSTRACT: Light-weight Immutable Directory Entry Object
 
@@ -12,6 +12,7 @@ DataStore::CAS::FS::DirEnt is a super-light-weight class.  More of an
 interface, really.  DirEnt objects should be considered immutable constants,
 and all attributes are read-only.  It is of course *possible* to modify them,
 but this will break caching features of L<DataStore::CAS::FS>, so don't do that.
+In particular, DO NOT modify the hashref returned by L</as_hash>
 
 See the L<clone(%params)|/clone> method for a convenient way to create modified
 copies of a DirEnt.
@@ -54,8 +55,8 @@ preserve a few files that had mangled names.  While you might want to fix
 those filenames, it would be inconvenient if your scheduled backups broke
 because of a bad filename.
 
-So, I came up with the L<DataStore::CAS::FS::InvalidUTF8> object, which you can
-use to wrap invalid UTF-8 sequences and deal with the problem later.
+So, I came up with the L<DataStore::CAS::FS::InvalidUTF8> object, which you
+can use to wrap invalid UTF-8 sequences and deal with the problem later.
 
 So, this 'name' field should return a string of unicode codepoints *or* an
 instance of DataStore::CAS::FS::InvalidUTF8 (which can stringify to the

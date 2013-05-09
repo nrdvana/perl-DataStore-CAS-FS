@@ -6,13 +6,14 @@ use Try::Tiny;
 use Carp;
 use JSON 2.53 ();
 use Scalar::Util 'looks_like_number';
-require DataStore::CAS::FS::InvalidUTF8;
 require DataStore::CAS::FS::Dir;
+require DataStore::CAS::FS::DirEnt;
+require DataStore::CAS::FS::InvalidUTF8;
 *decode_utf8= *DataStore::CAS::FS::InvalidUTF8::decode_utf8;
 
 use parent 'DataStore::CAS::FS::DirCodec';
 
-our $VERSION= '0.010000';
+our $VERSION= '0.011000';
 
 __PACKAGE__->register_format(unix => __PACKAGE__);
 
