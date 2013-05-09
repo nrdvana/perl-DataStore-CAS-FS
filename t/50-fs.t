@@ -131,6 +131,13 @@ subtest path_objects => sub {
 	isa_ok( $path= $cas->path('a','b','c','d')->path('..','..','f','i','j','f1'), 'DataStore::CAS::FS::Path' );
 	ok( $handle= $path->open );
 	is( do { local $/= undef; scalar <$handle> }, 'sdlfshldkjflskdfjslkdjf' );
+
+	is( $cas->path_if_exists("x"), undef, 'path_if_exists returns undef for invalid' );
+	isa_ok( $cas->path_if_exists("a"), 'DataStore::CAS::FS::Path', 'path_if_exists return Path for valid' );
+	$path= $cas->path("a");
+	is( $path->path_if_exists('m'), undef, 'path_if_exists from path object' );
+	isa_ok( $path->path_if_exists('b'), 'DataStore::CAS::FS::Path', 'path_if_exists from path object' );
+
 	done_testing;
 };
 

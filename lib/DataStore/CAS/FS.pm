@@ -345,6 +345,21 @@ sub path {
 		'DataStore::CAS::FS::Path';
 }
 
+=head2 path_if_exists
+
+  $path= $fs->path_if_exists( @path_names )
+
+This method is like L</path>, but it immediately resolves the path and returns
+undef if the path doesn't exist.  It returns the L<path object|/"PATH OBJECTS">
+if it does.
+
+=cut
+
+sub path_if_exists {
+	my $self= shift;
+	my $path= $self->path(@_);
+	$path->resolve({no_die => 1})? $path : undef;
+}
 
 =head2 tree_iterator
 
@@ -980,19 +995,33 @@ C<path_dirents> attribute.  Also returns C<path_dirents>.
 
 Get a sub-path from this path.  Returns another Path object.
 
+=head2 path_if_exists
+
+  $path->path_if_exists( \@sub_path )
+
+Returns path object if the subpath exists.  Returns undef if not.
+
 =cut
 
 # methods
 sub resolve {
-	$_[0]{path_dirents}= $_[0]{filesystem}->resolve_path($_[0]{path_names})
+	my $self= shift;
+	$self->{path_dirents}= $self->{filesystem}->resolve_path($self->{path_names}, @_)
 }
 
 sub path {
 	my $self= shift;
-	bless {
+	my $subpath= bless {
 		filesystem => $self->filesystem,
 		path_names => [ @{$self->path_names}, @_ ]
 	}, ref($self);
+	
+}
+
+sub path_if_exists {
+	my $self= shift;
+	my $path= $self->path(@_);
+	$path->resolve({no_die => 1})? $path : undef;
 }
 
 =head2 file
