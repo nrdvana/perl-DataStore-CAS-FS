@@ -66,8 +66,8 @@ my $sto= new_ok('DataStore::CAS::Virtual', [ entries => \%content ], 'create vir
 
 subtest resolve_path => sub {
 	my $cas= new_ok('DataStore::CAS::FS', [ store => $sto, root => $rootEntry ], 'create file view of cas' );
-	is( $cas->resolve_path('/')->[-1], $rootEntry, 'resolve root abs' );
-	is( $cas->resolve_path('.')->[-1], $rootEntry, 'resolve current dir at root' );
+	is_deeply( $cas->resolve_path('/'), [ $rootEntry ], 'resolve root abs' );
+	is_deeply( $cas->resolve_path('.'), [ $rootEntry ], 'resolve current dir at root' );
 
 	is( $cas->resolve_path('/a/b/c')->[-1]->ref, 'root.a.b.c', 'follow subdir abs' );
 	is( $cas->resolve_path('a/b/c')->[-1]->ref, 'root.a.b.c', 'follow subdir rel' );
@@ -83,7 +83,7 @@ subtest resolve_path => sub {
 	is( $cas->resolve_path('a/b/f/i/')->[-1]->ref,     'root.a.b.f.g',      'resolve symlink target dir' );
 	is( $cas->resolve_path('a/b/f/i/j/f1')->[-1]->ref, 'root.a.b.f.g.j.f1', 'resolve through symlink' );
 
-	is( $cas->resolve_path('a/../a/../a/..')->[-1], $rootEntry, 'follow ".."' );
+	is_deeply( $cas->resolve_path('a/../a/../a/..'), [ $rootEntry ], 'follow ".."' );
 	is( $cas->resolve_path('a/./b/./././.')->[-1]->ref, 'root.a.b', 'follow "."' );
 	is( $cas->resolve_path('a/b/c/d/e/L3/../f10')->[-1]->ref, 'root.a.f10', 'follow symlink through ".."' );
 	done_testing;

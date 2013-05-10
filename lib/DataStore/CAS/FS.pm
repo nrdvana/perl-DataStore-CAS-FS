@@ -341,7 +341,7 @@ L<< File::Spec-E<gt>splitdir|File::Spec/splitdir >>.
 =cut
 
 sub path {
-	bless { filesystem => (shift), path_names => [ @_ ] },
+	bless { filesystem => (shift), path_names => [ map { File::Spec->splitdir($_) } @_ ] },
 		'DataStore::CAS::FS::Path';
 }
 
@@ -695,7 +695,6 @@ sub set_path {
 	$flags ||= {};
 	my $nodes= $self->_resolve_path(undef, $path, { follow_symlinks => 1, partial => 1, %$flags });
 	croak $nodes unless ref $nodes;
-
 	# replace the final entry, after applying defaults
 	if (!$newent) {
 		# unlink request.  Ignore if node didn't exist.
@@ -1019,11 +1018,7 @@ sub resolve {
 
 sub path {
 	my $self= shift;
-	my $subpath= bless {
-		filesystem => $self->filesystem,
-		path_names => [ @{$self->path_names}, @_ ]
-	}, ref($self);
-	
+	$self->filesystem->path(@{$self->path_names}, @_);
 }
 
 sub path_if_exists {
