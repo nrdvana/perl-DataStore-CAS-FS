@@ -4,7 +4,7 @@ use Moo 1.000007;
 use Carp;
 use Try::Tiny 0.11;
 use File::Spec 3.33;
-use DataStore::CAS 0.01;
+use DataStore::CAS 0.02;
 
 our $VERSION= '0.011000';
 
