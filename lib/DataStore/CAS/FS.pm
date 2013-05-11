@@ -141,21 +141,23 @@ has hash_of_empty_dir => ( is => 'lazy' );
 
 has dir_cache         => ( is => 'rw', default => sub { DataStore::CAS::FS::DirCache->new() } );
 
-# _path_overrides is a tree of nodes, each of the form:
+# _nodes is a tree of nodes, each of the form:
 # $node= {
-#   entry   => $Dir_Entry,  # mandatory
+#   dirent  => $Dir_Entry,  # mandatory
 #   dir     => $CAS_FS_Dir, # optional, created on demand
 #   subtree => {
 #     KEY1 => $node1,
 #     KEY2 => $node2,
 #     ...
 #   }
+#   changed => 1 # set if a path override has happened here, or in any child node
+#   invalid => 1 # set whenever a path override deletes this node
 # }
 #
 #  If 'case_insensitive' is true, the keys will all be upper-case, but the $Dir_Entry
 #  objects will contain the correct-case name.
 #
-has _path_overrides   => ( is => 'rw' );
+has _nodes   => ( is => 'rw' );
 
 =head1 METHODS
 
@@ -461,7 +463,7 @@ sub resolve_path {
 	# Array means success, scalar means error.
 	if (ref($ret) eq 'ARRAY') {
 		# The user wants directory entries, not "nodes".
-		$_= $_->{entry} for @$ret;
+		$_= $_->{dirent} for @$ret;
 		return $ret;
 	}
 
@@ -477,7 +479,7 @@ sub _resolve_path {
 
 	my @path= ref($path_names)? @$path_names : File::Spec->splitdir($path_names);
 	$nodes ||= [];
-	push @$nodes, ($self->_path_overrides || { entry => $self->root_entry })
+	push @$nodes, ($self->{_nodes} ||= { dirent => $self->root_entry })
 		unless @$nodes;
 	
 	my $mkdir_defaults;
@@ -490,7 +492,7 @@ sub _resolve_path {
 	}
 
 	while (@path) {
-		my $ent= $nodes->[-1]{entry};
+		my $ent= $nodes->[-1]{dirent};
 		my $dir;
 
 		# Support for "symlink" is always UNIX-based (or compatible)
@@ -516,7 +518,7 @@ sub _resolve_path {
 			return 'Cannot descend into directory entry "'.$ent->name.'" of type "'.$ent->type.'"'
 				unless ($flags->{mkdir}||0) > 1;
 			# Here, mkdir flag converts entry into a directory
-			$nodes->[-1]{entry}= $ent->clone(@{ $mkdir_defaults ||= _build_mkdir_defaults($flags)});
+			$nodes->[-1]{dirent}= $ent->clone(@{ $mkdir_defaults ||= _build_mkdir_defaults($flags)});
 		}
 
 		# Get the next path component, ignoring empty and '.'
@@ -538,20 +540,20 @@ sub _resolve_path {
 			my $key= $self->case_insensitive? uc $name : $name;
 			$subnode= $nodes->[-1]{subtree}{$key};
 		}
-		if (!defined $subnode) {
-			# Else we need to find the name within the current directory
 
+		# Else we need to find the name within the current directory
+		if (!defined $subnode && (defined $nodes->[-1]{dir} || defined $ent->ref)) {
 			# load it if it isn't cached
-			if (!defined $nodes->[-1]{dir} && defined $ent->ref) {
-				defined ( $nodes->[-1]{dir}= $self->get_dir($ent->ref) )
-					or return 'Failed to open directory "'.$ent->name.' ('.$ent->ref.')"';
-			}
+			($nodes->[-1]{dir} ||= $self->get_dir($ent->ref))
+				or return 'Failed to open directory "'.$ent->name.' ('.$ent->ref.')"';
 
-			# If we're working on an available directory, try loading it
-			my $subent= $nodes->[-1]{dir}->get_entry($name)
-				if defined $nodes->[-1]{dir};
-			$subnode= { entry => $subent }
-				if defined $subent;
+			# See if the directory contains this entry
+			if (defined (my $subent= $nodes->[-1]{dir}->get_entry($name))) {
+				$subnode= { dirent => $subent };
+				my $key= $self->case_insensitive? uc $name : $name;
+				# Weak reference, until _apply_overrides is called.
+				Scalar::Util::weaken( $nodes->[-1]{subtree}{$key}= $subnode );
+			}
 		}
 
 		# If we haven't found one, or if it is 0 (deleted), either create or die.
@@ -559,7 +561,8 @@ sub _resolve_path {
 			# If we're supposed to create virtual entries, do so
 			if ($flags->{mkdir} or $flags->{partial}) {
 				$subnode= {
-					entry => DataStore::CAS::FS::DirEnt->new(
+					invalid => 1, # not valid until _apply_overrides
+					dirent => DataStore::CAS::FS::DirEnt->new(
 						name => $name,
 						# It is a directory if there are more path components to resolve.
 						(@path? @{ $mkdir_defaults ||= _build_mkdir_defaults($flags)} : ())
@@ -568,7 +571,7 @@ sub _resolve_path {
 			}
 			# Else it doesn't exist and we fail.
 			else {
-				my $dir_path= File::Spec->catdir(map { $_->{entry}->name } @$nodes);
+				my $dir_path= File::Spec->catdir(map { $_->{dirent}->name } @$nodes);
 				return "Directory \"$dir_path\" is not present in storage"
 					unless defined $nodes->[-1]{dir};
 				return "No such directory entry \"$name\" at \"$dir_path\"";
@@ -620,7 +623,7 @@ sub readdir {
 # This method combines the original directory with its overrides.
 sub _get_dir_entries {
 	my ($self, $node)= @_;
-	my $ent= $node->{entry};
+	my $ent= $node->{dirent};
 	croak "Can't get listing for non-directory"
 		unless $ent->type eq 'dir';
 	my %dirents;
@@ -638,9 +641,15 @@ sub _get_dir_entries {
 	}
 	if (my $t= $node->{subtree}) {
 		for (keys %$t) {
-			ref $t->{$_}?
-				($dirents{$caseless? uc($_) : $_}= $t->{$_}{entry})
-				: delete $dirents{$caseless? uc($_) : $_};
+			my $subnode= $t->{$_};
+			next unless defined $subnode;
+			die "BUG" if ref $subnode && $subnode->{invalid};
+			if (ref $subnode) {
+				$dirents{$_}= $subnode->{dirent}
+					if $subnode->{changed};
+			} else {
+				delete $dirents{$_};
+			}
 		}
 	}
 	return [ map { $dirents{$_} } sort keys %dirents ];
@@ -698,28 +707,43 @@ sub set_path {
 	# replace the final entry, after applying defaults
 	if (!$newent) {
 		# unlink request.  Ignore if node didn't exist.
-		return unless defined $nodes->[-1]{entry}->type;
+		return if $nodes->[-1]{invalid};
+
 		# Can't unlink the root node
 		croak "Can't unlink root node"
 			unless @$nodes > 1;
+
+		$nodes->[-1]{invalid}= 1;
+		# Recursively invalidate all nodes beneath this one
+		&_invalidate_subtree for ($nodes->[-1]);
+
 		# Mark in prev node that this item is gone
-		my $key= $self->case_insensitive? uc $nodes->[-1]{entry}->name : $nodes->[-1]{entry}->name;
+		my $key= $self->case_insensitive? uc $nodes->[-1]{dirent}->name : $nodes->[-1]{dirent}->name;
 		pop @$nodes;
 		$nodes->[-1]{subtree}{$key}= 0;
 	} else {
 		if (ref $newent eq 'HASH' or !defined $newent->name or !defined $newent->type) {
 			my %ent_hash= %{ref $newent eq 'HASH'? $newent : $newent->as_hash};
-			$ent_hash{name}= $nodes->[-1]{entry}->name
+			$ent_hash{name}= $nodes->[-1]{dirent}->name
 				unless defined $ent_hash{name};
 			defined $ent_hash{name} && length $ent_hash{name}
 				or die "No name for new dir entry";
-			$ent_hash{type}= $nodes->[-1]{entry}->type || 'file'
+			$ent_hash{type}= $nodes->[-1]{dirent}->type || 'file'
 				unless defined $ent_hash{type};
 			$newent= DataStore::CAS::FS::DirEnt->new(\%ent_hash);
 		}
-		$nodes->[-1]{entry}= $newent;
+		$nodes->[-1]{dirent}= $newent;
+		delete $nodes->[-1]{dir};
+		# Recursively invalidate all nodes beneath this one
+		&_invalidate_subtree for ($nodes->[-1]);
 	}
+	# Now connect nodes with strong references, and mark as changed
 	$self->_apply_overrides($nodes);
+}
+sub _invalidate_subtree {
+	if ($_->{subtree}) {
+		++$_->{invalid} && &_invalidate_subtree for grep { ref $_ } values %{delete $_->{subtree}};
+	}
 }
 
 =head2 update_path
@@ -740,13 +764,23 @@ sub update_path {
 	croak $nodes unless ref $nodes;
 
 	# update the final entry, after applying defaults
-	my $entref= \$nodes->[-1]{entry};
+	my $entref= \$nodes->[-1]{dirent};
+	my $old_dir_ref= defined $$entref->type && $$entref->type eq 'dir'? $$entref->ref : undef;
 	$$entref= $$entref->clone(
-		defined $$entref->type? () : ( type => 'file' ),
+		(defined $$entref->type? () : ( type => 'file' )),
 		ref $changes eq 'HASH'? %$changes
 			: ref $changes eq 'ARRAY'? @$changes
 			: croak 'parameter "changes" must be a hashref or arrayref'
 	);
+	my $new_dir_ref= $$entref->type eq 'dir'? $$entref->ref : undef;
+
+	# If we changed the type of a directory, or changed which digest_hash it
+	# refers to, then we should clear the subtree under this node.
+	if (($old_dir_ref || '') ne ($new_dir_ref || '') && $nodes->[-1]{subtree}) {
+		# Recursively invalidate all nodes beneath this one
+		&_invalidate_subtree for ($nodes->[-1]);
+		delete $nodes->[-1]{dir};
+	}
 
 	$self->_apply_overrides($nodes);
 }
@@ -754,17 +788,20 @@ sub update_path {
 sub _apply_overrides {
 	my ($self, $nodes)= @_;
 	# Ensure that each node is connected to the previous via 'subtree'.
-	# When we find the first connected node, we assume the rest are connected.
-	my $i;
-	for ($i= $#$nodes; $i > 0; $i--) {
-		my $key= $self->case_insensitive? uc $nodes->[$i]{entry}->name : $nodes->[$i]{entry}->name;
-		my $childref= \$nodes->[$i-1]{subtree}{$key};
-		last if $$childref and $$childref eq $nodes->[$i];
-		$$childref= $nodes->[$i];
+	# When we find the first changed node, we assume the rest are connected.
+	my $prev;
+	for (reverse @$nodes) {
+		if ($prev) {
+			my $key= $self->case_insensitive? uc($prev->{dirent}->name) : $prev->{dirent}->name;
+			$_->{subtree}{$key}= $prev;
+		}
+		last if $_->{changed} && !$_->{invalid};
+		delete $_->{invalid};
+		$_->{changed}= 1;
+		$prev= $_;
 	}
 	# Finally, make sure the root override is set
-	$self->{_path_overrides}= $nodes->[0]
-		unless $i;
+	$self->{_nodes}= $nodes->[0];
 	1;
 }
 
@@ -782,8 +819,8 @@ sub mkdir {
 	my ($self, $path)= @_;
 	my $nodes= $self->_resolve_path(undef, $path, { follow_symlinks => 1, mkdir => 1 });
 	croak $nodes unless ref $nodes;
-	unless (defined $nodes->[-1]{entry}->type) {
-		$nodes->[-1]{entry}= $nodes->[-1]{entry}->clone(type => 'dir');
+	unless (defined $nodes->[-1]{dirent}->type) {
+		$nodes->[-1]{dirent}= $nodes->[-1]{dirent}->clone(type => 'dir');
 		$self->_apply_overrides($nodes);
 	}
 	1;
@@ -836,7 +873,10 @@ This basically just discards all the in-memory overrides created with
 
 sub rollback {
 	my $self= shift;
-	$self->{_path_overrides}= undef;
+	if ($self->{_nodes} && $self->{_nodes}{changed}) {
+		&invalidate_node for ($self->{_nodes});
+		$self->{_nodes}= undef;
+	}
 	1;
 }
 
@@ -855,13 +895,13 @@ tree.
 
 sub commit {
 	my $self= shift;
-	if ($self->_path_overrides) {
-		my $root_node= $self->_path_overrides;
+	if ($self->_nodes && $self->_nodes->{changed}) {
+		my $root_node= $self->_nodes;
 		croak "Root override must be a directory"
-			unless $root_node->{entry}->type eq 'dir';
+			unless $root_node->{dirent}->type eq 'dir';
 		my $hash= $self->_commit_recursive($root_node);
-		$self->{root_entry}= $root_node->{entry}->clone(ref => $hash);
-		$self->{_path_overrides}= undef;
+		$self->{root_entry}= $root_node->{dirent}->clone(ref => $hash);
+		$self->{_nodes}= undef;
 	}
 	1;
 }
@@ -872,35 +912,46 @@ sub commit {
 sub _commit_recursive {
 	my ($self, $node)= @_;
 
-	my $subtree= $node->{subtree} || {};
+	my %changes;
 	my @entries;
-
+	if (my $subtree= $node->{subtree}) {
+		while (my ($k, $v)= each %{$node->{subtree}}) {
+			$changes{$k}= $v
+				if defined $v && ($v eq 0 || $v->{changed});
+		}
+	}
+	
+	# If no changes, return original directory (if it exists)
+	return $node->{dirent}->ref
+		if !%changes && defined $node->{dirent}->ref;
+	
 	# Walk the directory entries and filter out any that have been overridden.
-	if (defined $node->{dir} || defined $node->{entry}->ref) {
-		($node->{dir} ||= $self->get_dir($node->{entry}->ref))
-			or croak 'Failed to open directory "'.$node->{entry}->name.' ('.$node->{entry}->ref.')"';
+	if (defined $node->{dir} || defined $node->{dirent}->ref) {
+		($node->{dir} ||= $self->get_dir($node->{dirent}->ref))
+			or croak 'Failed to open directory "'.$node->{dirent}->name.' ('.$node->{dirent}->ref.')"';
 		
 		my ($iter, $ent);
+		my $caseless= $self->case_insensitive;
 		for ($iter= $node->{dir}->iterator; defined ($ent= $iter->()); ) {
-			my $key= $self->case_insensitive? uc $ent->name : $ent->name;
-			push @entries, $ent
-				unless defined $subtree->{$key};
+			push @entries, $ent unless $changes{$caseless? uc($ent->name) : $ent->name};
 		}
 	}
 
 	# Now append the modified entries.
 	# Skip the "0"s, which represent files to unlink.
-	for (grep { ref $_ } values %$subtree) {
+	for (grep { ref $_ } values %changes) {
 		# Check if node is a dir and needs committed
-		if ($_->{subtree} and $_->{entry}->type eq 'dir') {
+		if ($_->{subtree} and $_->{dirent}->type eq 'dir' and $_->{changed}) {
 			my $hash= $self->_commit_recursive($_);
-			$_->{entry}= $_->{entry}->clone( ref => $hash );
-			delete $_->{subtree};
-			delete $_->{dir};
+			$_->{dirent}= $_->{dirent}->clone( ref => $hash );
 		}
 		
-		push @entries, $_->{entry};
+		push @entries, $_->{dirent};
 	}
+
+	# Invalidate all children of this node
+	&_invalidate_subtree for ($node);
+	
 	# Now re-encode the directory, using the same type as orig_dir
 	return $self->hash_of_empty_dir
 		unless @entries;
@@ -913,22 +964,32 @@ sub _commit_recursive {
 package DataStore::CAS::FS::Path;
 use strict;
 use warnings;
-use Carp;
 
 =head1 PATH OBJECTS
 
+Path objects are a simple wrapper around a path name array.  Path objects are
+lazily resolved to Filesystem Nodes.  This means the path object can exist
+even if the node does not, and a path object to "/foo" will continue to be
+usable even if "foo" is deleted and re-created.
+
+Most methods of the path objects just pass-through to the Node object returned
+from L</resolve>.
+
 =head2 path_names
 
-Arrayref of path parts
-
-=head2 path_dirents
-
-Arrayref of L<DirEnt|DataStore::CAS::FS::DirEnt> objects resolved from the
-C<path_names>.  Lazy-built, so it might C<die> when accessed.
+Arrayref of path parts.  If you created the path object from a path string
+like "/foo/bar", path_names will contain the result of File::Spec->splitdir:
+C<[ '', 'foo', 'bar' ]>.
 
 =head2 filesystem
 
 Reference to the DataStore::CAS::FS it was created by.
+
+=head2 path_dirents
+
+Returns an array of L<DirEnt|DataStore::CAS::FS::DirEnt> objects resolved from
+this path.  Throws an exception if the path does not currently exist in the
+filesystem.
 
 =head2 path_name_list
 
@@ -961,17 +1022,37 @@ requested path.
 =cut
 
 # main attributes
-sub path_names       { $_[0]{path_names} || [ map { $_->name } @{$_[0]->path_dirents} ] }
-sub path_dirents     { $_[0]{path_dirents} || $_[0]->resolve }
+sub path_names       { $_[0]{path_names} }
 sub filesystem       { $_[0]{filesystem} }
+#sub _node_path       { $_[0]{_node_path} }
 
 # convenience accessors
 sub path_name_list   { @{$_[0]->path_names} }
-sub path_dirent_list { @{$_[0]->path_dirents} }
-sub dirent           { $_[0]->path_dirents->[-1] }
-sub type             { $_[0]->path_dirents->[-1]->type }
-sub name             { $_[0]->path_dirents->[-1]->name }
-sub depth            { @{$_[0]->path_dirents} - 1 }
+sub path_dirent_list { map { $_->{dirent} } @{$_[0]->resolve} }
+sub path_dirents     { [ $_[0]->path_dirent_list ] }
+sub dirent           { $_[0]->resolve->[-1]{dirent} }
+sub type             { $_[0]->resolve->[-1]{dirent}->type }
+sub name             { $_[0]->resolve->[-1]{dirent}->name }
+sub depth            { -1 + @{$_[0]->resolve} }
+
+=head2 canonical_path
+
+Returns a unix-notation absolute path, with extra '/' and '.' removed.
+
+The path is not resolved, and may contain ".."
+
+=cut
+
+sub canonical_path {
+	my $self= shift;
+	$self->{canonical_path} ||= do {
+		my $name= $self->path_names;
+		my $path= '/'.join('/', grep { length && $_ ne '.' } @$name);
+		$path .= '/' if $name->[-1] eq '' || $name->[-1] eq '.';
+		$path =~ s|//+|/|g;
+		$path;
+	};
+}
 
 =head2 resolved_canonical_path
 
@@ -979,23 +1060,56 @@ sub depth            { @{$_[0]->path_dirents} - 1 }
   # where /bar is a symlink to /baz
   # returns "/baz"
 
-The path_dirents in UNIX absolute path notation, with '.', '..', '' and symlinks resolved.
+Resolves the path, and then returns a canonical unix notation for it.  The
+resolved path never ends with '/' because all symlinks have been resolved,
+and it would serve no purpose.
 
 =cut
 
 sub resolved_canonical_path {
-	my $self= shift;
-	$self->{resolved_canonical_path}= '/'.join('/', grep { length; } map { $_->name } @{$self->path_dirents})
-		unless defined $self->{resolved_canonical_path};
-	$self->{resolved_canonical_path};
+	my $x= $_[0]->resolve;
+	# ignore name of root entry
+	return '/'.join('/', map { $_->{dirent}->name } @$x[1..$#$x]);
 }
 
 =head2 resolve
 
   $path->resolve()
 
-Call L</resolve_path> for C<path_names>, and cache the result in the
-C<path_dirents> attribute.  Also returns C<path_dirents>.
+Resolve the path, and cache the underlying nodes until the next time the
+Filesystem is modified.
+
+=cut
+
+sub resolve {
+	# See if we can re-use the previous result...
+	my $nodes= $_[0]{_node_path};
+	return $nodes if $nodes && ref $nodes->[-1] && !$nodes->[-1]{invalid};
+	# Only re-resolve the nodes which have been invalidated.
+	# This is part of an optimization to create half-resolved path objects.
+	my ($self, $flags)= @_;
+	my (@valid_nodes, $sub_path);
+	if ($nodes) {
+		for (@$nodes) {
+			last if !ref $_ || $_->{invalid};
+			push @valid_nodes, $_;
+		}
+		$sub_path= [ map { ref $_? $_->{dirent}->name : $_ } @{$nodes}[ scalar(@valid_nodes) .. $#$nodes ] ];
+	} else {
+		$sub_path= $self->{path_names};
+	}
+	$flags= { follow_symlinks => 1, $flags? %$flags : () };
+	$nodes= $self->{filesystem}->_resolve_path(\@valid_nodes, $sub_path, $flags);
+	if (ref $nodes) {
+		return ($self->{_node_path}= $nodes);
+	} else {
+		# else, got an error...
+		${$flags->{error_out}}= $nodes
+			if ref $flags->{error_out};
+		Carp::croak $nodes unless $flags->{no_die};
+		return undef;
+	}
+}
 
 =head2 path
 
@@ -1007,18 +1121,18 @@ Get a sub-path from this path.  Returns another Path object.
 
   $path->path_if_exists( \@sub_path )
 
-Returns path object if the subpath exists.  Returns undef if not.
+Returns a path object if the subpath exists.  Returns undef if not.
 
 =cut
 
-sub resolve {
-	my $self= shift;
-	$self->{path_dirents}= $self->{filesystem}->resolve_path($self->{path_names}, @_)
-}
-
 sub path {
 	my $self= shift;
-	$self->filesystem->path(@{$self->path_names}, @_);
+	my @sub_names= map { File::Spec->splitdir($_) } @_;
+	bless {
+		filesystem => $self->{filesystem},
+		path_names => [ @{$self->{path_names}}, @sub_names ],
+		$self->{_node_path}? (_node_path => [ @{$self->{_node_path}}, @sub_names ]) : (),
+	}, ref $self;
 }
 
 sub path_if_exists {
@@ -1059,8 +1173,8 @@ Alias for C<< $path-E<gt>file-E<gt>open >>
 sub file {
 	$_[0]{file} ||= do {
 		my $ent= $_[0]->dirent;
-		$ent->type eq 'file' or croak "Path is not a file";
-		defined (my $hash= $ent->ref) or croak "File was not stored in CAS";
+		$ent->type eq 'file' or Carp::croak "Path is not a file";
+		defined (my $hash= $ent->ref) or Carp::croak "File was not stored in CAS";
 		$_[0]->filesystem->get($hash);
 	};
 }
@@ -1085,8 +1199,8 @@ reflect any changes to the filesystem until C<$fs-E<gt>commit> is called.
 sub dir {
 	$_[0]{dir} ||= do {
 		my $ent= $_[0]->dirent;
-		$ent->type eq 'dir' or croak "Path is not a directory";
-		defined (my $hash= $ent->ref) or croak "Directory was not stored in CAS";
+		$ent->type eq 'dir' or Carp::croak "Path is not a directory";
+		defined (my $hash= $ent->ref) or Carp::croak "Directory was not stored in CAS";
 		$_[0]->filesystem->get_dir($hash);
 	}
 }
@@ -1177,6 +1291,7 @@ sub new {
 		for qw( path fs );
 	$self->{path_nodes}= \my @nodes;
 	$self->{dirstack}= \my @dirstack;
+	$self->{names}= \my @names;
 	$self->{filterref}= \my $filter;
 	$filter= delete $self->{filter};
 	my $fs= $self->{fs};
@@ -1188,21 +1303,24 @@ sub new {
 		while (!@{$dirstack[-1]}) {
 			pop @dirstack; # back out of directory
 			pop @nodes;
+			pop @names;
 			return undef unless @dirstack;
 		}
 		# Iterate path leaf, by removing last leaf, and resolving using the
 		#  next name.
 		pop @nodes;
-		$fs->_resolve_path(\@nodes, [ shift @{$dirstack[-1]} ] );
-		# Create path object
+		$names[-1]= shift @{$dirstack[-1]};
+		$fs->_resolve_path(\@nodes, [ $names[-1] ]);
 		my $p= bless {
-				path_dirents  => [ map { $_->{entry} } @nodes ],
+				path_names => \@names,
+				path_dirents  => \@nodes,
 				filesystem => $fs,
 			}, 'DataStore::CAS::FS::Path';
 		# If a dir, push it onto the stack
 		if ($p->type eq 'dir') {
 			push @dirstack, [ map { $_->name } @{ $fs->_get_dir_entries($nodes[-1]) } ];
 			push @nodes, undef;
+			push @names, undef;
 		}
 		return $p;
 	}, $class;
@@ -1217,8 +1335,9 @@ sub _init {
 	# maintain an array of resolved path nodes, and an array of
 	#  arrays of names-to-iterate for each directory
 	@{$self->{path_nodes}}= @$x;
+	@{$self->{names}}= map { $_->{dirent}->name } @$x;
 	@{$self->{dirstack}}= ([]) x @$x;
-	push @{$self->{dirstack}[-1]}, $x->[-1]->{entry}->name;
+	push @{$self->{dirstack}[-1]}, $self->{names}[-1];
 }
 
 sub reset {

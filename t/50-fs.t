@@ -86,6 +86,13 @@ subtest resolve_path => sub {
 	is_deeply( $cas->resolve_path('a/../a/../a/..'), [ $rootEntry ], 'follow ".."' );
 	is( $cas->resolve_path('a/./b/./././.')->[-1]->ref, 'root.a.b', 'follow "."' );
 	is( $cas->resolve_path('a/b/c/d/e/L3/../f10')->[-1]->ref, 'root.a.f10', 'follow symlink through ".."' );
+	
+	ok( exists $cas->_nodes->{subtree}{a}, 'subtree "a" was visited' );
+	ok( !defined $cas->_nodes->{subtree}{a}, 'subtree "a" was garbage collected' );
+	my $x= $cas->path('a/b');
+	$x->resolve;
+	ok( defined $cas->_nodes->{subtree}{a}, 'subtree "a" is not garbage collected' );
+	ok( defined $cas->_nodes->{subtree}{a}{subtree}{b}, 'subtree "a/b" is not garbage collected' );
 	done_testing;
 };
 
@@ -99,8 +106,13 @@ subtest dir_listing => sub {
 subtest alter_path => sub {
 	my $cas= new_ok('DataStore::CAS::FS', [ store => $sto, root => $rootEntry ], 'create file view of cas' );
 	ok( $cas->update_path('a/b/c', { type => 'dir', ref => 'root.a.b.c.d' }), 'update path' );
-	isa_ok( $cas->_path_overrides, 'HASH', 'overrides initiated' );
+	isa_ok( $cas->_nodes, 'HASH', 'overrides initiated' );
 	is( $cas->resolve_path('/a/b/c')->[-1]->ref, 'root.a.b.c.d', 'directory is relinked' );
+	is( $cas->_nodes->{subtree}{a}{subtree}{b}{subtree}{c}{subtree}, undef, 'a/b/c is a leaf' );
+	is( $cas->_nodes->{subtree}{a}{subtree}{b}{subtree}{c}{changed}, 1, 'a/b/c changed' );
+	is( $cas->_nodes->{subtree}{a}{subtree}{b}{changed}, 1, 'a/b changed' );
+	is( $cas->_nodes->{subtree}{a}{changed}, 1, 'a changed' );
+	is( $cas->_nodes->{changed}, 1, 'root changed' );
 	is( $cas->resolve_path('/a/b/c/L1')->[-1]->type, 'symlink', 'traverse relinked directory' );
 	is( $cas->root_entry->ref, 'root', 'root entry unchanged' );
 	ok( $cas->commit, 'commit' );
