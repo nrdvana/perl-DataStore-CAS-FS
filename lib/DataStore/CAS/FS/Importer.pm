@@ -6,6 +6,7 @@ use Try::Tiny;
 use File::Spec::Functions 'catfile', 'catdir', 'splitpath', 'catpath';
 use Fcntl;
 use DataStore::CAS::FS::InvalidUTF8;
+use DataStore::CAS::FS::DirCodec;
 
 our $VERSION= '0.011000';
 
@@ -212,17 +213,6 @@ C<dir_format =E<gt> 'universal'> to make use of C<reuse_digests =E<gt> 3>.
 
 =back
 
-=head2 auth_mapper
-
-Read/write.  Importer collects unix UID and GID if the flag 'collect_unix_perm'
-is set.  If uid_mapper is non-null, Importer will also collect the username and
-group name.  uid_mapper doesn't need to derive from any particular class; it
-just needs methods 'resolve_uid' and 'resolve_gid' which take one argument and
-return a unicode string.
-
-The default is an object that uses getpwuid and getgrgid, and caches the
-results.
-
 =cut
 
 our %_flag_defaults;
@@ -231,6 +221,7 @@ BEGIN {
 		die_on_dir_error  => 1,
 		die_on_file_error => 1,
 		die_on_hint_error => 0,
+		die_on_metadata_error => 0,
 		collect_metadata_ts => 1,
 		collect_access_ts => 0,
 		collect_unix_perm => 1,
@@ -250,15 +241,12 @@ sub _flag_defaults {
 	\%_flag_defaults;
 }
 
-has dir_format  => ( is => 'rw', default => sub { 'universal' } );
-has filter      => ( is => 'rw' );
-has flags       => ( is => 'rw', default => sub { { } } );
-has auth_mapper => ( is => 'lazy' );
+has dir_format     => ( is => 'rw', default => sub { 'universal' } );
+has filter         => ( is => 'rw' );
+has flags          => ( is => 'rw', default => sub { { } } );
+has unix_uid_cache => ( is => 'rw', default => sub { {} } );
+has unix_gid_cache => ( is => 'rw', default => sub { {} } );
 has _hint_check_fn => ( is => 'rwp' );
-
-sub _build_auth_mapper {
-	return DataStore::CAS::FS::Importer::UnixIdMapper->new();
-}
 
 sub _handle_hint_error {
 	croak $_[1] if $_[0]->die_on_hint_error;
@@ -272,6 +260,11 @@ sub _handle_file_error {
 
 sub _handle_dir_error {
 	croak $_[1] if $_[0]->die_on_dir_error;
+	warn "$_[1]\n";
+}
+
+sub _handle_metadata_error {
+	croak $_[1] if $_[0]->die_on_metadata_error;
 	warn "$_[1]\n";
 }
 
@@ -399,7 +392,7 @@ sub _import_directory {
 			push @entries, $self->_import_directory_entry($cas, $ent_path, $ent_name, $stat, $hint);
 		}
 	}
-	return DataStore::CAS::FS::DirCodec->store($cas, $self->dir_format, \@entries, {} );
+	return DataStore::CAS::FS::DirCodec->put($cas, $self->dir_format, \@entries, {} );
 }
 
 =head2 import_directory_entry
@@ -466,7 +459,7 @@ sub _import_directory_entry {
 				} catch {
 					$err= $_;
 				};
-				$self->_handle_hint_error("Error while loading virtual path '".$hint->resolved_canonical_path.'/'.$ent_name."': $err")
+				$self->_handle_hint_error("Error while loading virtual path '".$hint->resolved_canonical_path.'/'.$attrs->{name}."': $err")
 					if defined $err;
 			}
 			$attrs->{ref}= $self->_import_directory($cas, $ent_path, $subdir_hint);
@@ -522,32 +515,58 @@ sub collect_dirent_metadata {
 		$self->_handle_dir_error("Type of dirent is unknown: ".($stat->[2] & Fcntl::S_IFMT()));
 		$attrs{type}= 'file';
 	}
-	if ($self->collect_unix_perm) {
-		$attrs{unix_uid}= $stat->[4];
-		$attrs{unix_gid}= $stat->[5];
+	if ($self->{flags}{collect_unix_perm}) {
 		$attrs{unix_mode}= ($stat->[2] & ~Fcntl::S_IFMT());
-		if (my $m= $self->auth_mapper) {
-			$attrs{unix_user}= $m->resolve_uid($stat->[4]);
-			$attrs{unix_group}= $m->resolve_gid($stat->[5]);
+		my $uid= $attrs{unix_uid}= $stat->[4];
+		if (my $cache= $self->unix_uid_cache) {
+			if (!exists $cache->{$uid}) {
+				my $name= getpwuid($uid);
+				if (!defined $name) {
+					$self->_handle_metadata_error("No username for UID $uid");
+				} elsif ($self->utf8_filenames) {
+					$name= DataStore::CAS::FS::InvalidUTF8->decode_utf8($name);
+				} else {
+					utf8::upgrade($name);
+				}
+				$cache->{$uid}= $name;
+			}
+			$attrs{unix_user}= $cache->{$uid}
+				if defined $cache->{$uid};
+		}
+		my $gid= $attrs{unix_gid}= $stat->[5];
+		if (my $cache= $self->unix_gid_cache) {
+			if (!exists $cache->{$gid}) {
+				my $name= getgrgid($gid);
+				if (!defined $name) {
+					$self->_handle_metadata_error("No groupname for GID $gid");
+				} elsif ($self->utf8_filenames) {
+					$name= DataStore::CAS::FS::InvalidUTF8->decode_utf8($name);
+				} else {
+					utf8::upgrade($name);
+				}
+				$cache->{$gid}= $name;
+			}
+			$attrs{unix_group}= $cache->{$gid}
+				if defined $cache->{$gid};
 		}
 	}
-	if ($self->collect_metadata_ts) {
+	if ($self->{flags}{collect_metadata_ts}) {
 		$attrs{metadata_ts}= $stat->[10];
 	}
-	if ($self->collect_access_ts) {
+	if ($self->{flags}{collect_access_ts}) {
 		$attrs{access_ts}= $stat->[8];
 	}
-	if ($self->collect_unix_misc) {
+	if ($self->{flags}{collect_unix_misc}) {
 		$attrs{unix_dev}= $stat->[0];
 		$attrs{unix_inode}= $stat->[1];
 		$attrs{unix_nlink}= $stat->[3];
 		$attrs{unix_blocksize}= $stat->[11];
 		$attrs{unix_blockcount}= $stat->[12];
 	}
-	if ($self->collect_acl) {
+	if ($self->{flags}{collect_acl}) {
 		# TODO
 	}
-	if ($self->collect_ext_attr) {
+	if ($self->{flags}{collect_ext_attr}) {
 		# TODO
 	}
 	if ($attrs{type} eq 'dir') {
@@ -686,19 +705,5 @@ sub mtime   { $_[0][9] }
 sub ctime   { $_[0][10] }
 sub blksize { $_[0][11] }
 sub blocks  { $_[0][12] }
-
-package DataStore::CAS::FS::Importer::UnixIdMapper;
-use Moo;
-
-has uid_cache => ( is => 'rw', default => sub { {} } );
-has gid_cache => ( is => 'rw', default => sub { {} } );
-
-sub resolve_uid {
-	$_[0]{uid_cache}{$_[1]} ||= DataStore::CAS::FS::InvalidUTF8->decode_utf8(getpwuid($_[1]));
-}
-
-sub resolve_gid {
-	$_[0]{gid_cache}{$_[1]} ||= DataStore::CAS::FS::InvalidUTF8->decode_utf8(getgrgid($_[1]));
-}
 
 1;
