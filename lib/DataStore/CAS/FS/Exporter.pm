@@ -122,7 +122,9 @@ sub export_tree {
 
 	-e $real_path
 		and croak "The destination path must not already exist";
-
+	if (utf8::is_utf8($real_path)) {
+		$self->utf8_filenames? utf8::encode($real_path) : utf8::downgrade($real_path);
+	}
 	$self->_extract_recursive($virt_path, $real_path);
 	1;
 }
@@ -141,19 +143,24 @@ sub _extract_recursive {
 				my $src_fh= $src->open;
 				my ($buf, $got);
 				while ($got= read($src_fh, $buf, 1024*1024)) {
-					(print $dest_fh, $buf) or die "write: $!\n";
+					(print $dest_fh $buf) or die "write: $!\n";
 				}
 				defined $got or die "read: $!\n";
 				close $src_fh or die "close: $!\n";
 				close $dest_fh or die "close: $!\n";
 			} catch {
-				chomp( $err= $_ );
+				chomp( $err= "$_" );
 			};
-			$self->_handle_creation_error("copy to \"$real_path\": $err");
+			$self->_handle_creation_error("copy to \"$real_path\": $err")
+				if defined $err;
 		}
 	} elsif ($dirent->type eq 'dir') {
-		$self->_extract_recursive($src->path($_), File::Spec->catdir($real_path, $_))
-			for $src->readdir;
+		for ($src->readdir) {
+			my $sysname= "$_";
+			$self->utf8_filenames? utf8::encode($sysname) : utf8::downgrade($sysname)
+				if utf8::is_utf8($sysname);
+			$self->_extract_recursive($src->path($_), File::Spec->catdir($real_path, $sysname))
+		}
 	}
 	$self->_apply_metadata($dirent, $real_path);
 }
@@ -214,8 +221,10 @@ sub _apply_metadata {
 		|| $self->_handle_metadata_error("chown($uid, $gid, $path): $!")
 		if defined $uid || defined $gid;
 
-	my ($mtime, $atime)= ($entry->modify_ts, $entry->access_ts);
-	if (defined $mtime || defined $atime) {
+	my $mtime= $entry->modify_ts;
+	if (defined $mtime) {
+		my $atime= $entry->access_ts;
+		defined $atime or $atime= $mtime;
 		utime($atime, $mtime, $path)
 			or $self->_handle_metadata_error("utime($atime, $mtime, $path): $!");
 	}
@@ -237,6 +246,7 @@ sub _mknod {
 	my $fn= (try { require Unix::Mknod; 1; } catch { undef })? \&_mknod_perl
 		: (`mknod --version` && $? == 0)? \&_mknod_system
 		: \&_mknod_unsupported;
+	no warnings 'redefine';
 	*_mknod= $fn;
 	goto $fn;
 }

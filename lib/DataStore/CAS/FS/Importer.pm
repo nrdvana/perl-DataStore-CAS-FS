@@ -323,8 +323,6 @@ L</reuse_digests> flag.
 sub import_tree {
 	my ($self, $src, $dest)= @_;
 	
-	$src= $self->_sanitize_path($src);
-
 	my $stat= $self->_stat($src)
 		or croak "Source does not exist";
 
@@ -333,7 +331,8 @@ sub import_tree {
 
 	$self->_build__hint_check_fn;
 
-	my $ent= $self->_import_directory_entry($dest->filesystem->store, $src, undef, $stat, $dest);
+	my $ent_name= $self->_entname_from_path($src);
+	my $ent= $self->_import_directory_entry($dest->filesystem->store, $src, $ent_name, $stat, $dest);
 	$dest->filesystem->set_path($dest->path_names, $ent);
 	1;
 }
@@ -351,8 +350,6 @@ digest hashes for files whose metadata matches.
 
 sub import_directory {
 	my ($self, $cas, $path, $hint)= @_;
-
-	$path= $self->_sanitize_path($path);
 
 	my $stat= $self->_stat($path)
 		or croak "Source does not exist";
@@ -374,9 +371,16 @@ sub _import_directory {
 	for my $ent_name (@$names) {
 		my $ent_path= catfile($path, $ent_name);
 		my $stat= $self->_stat($ent_path);
+
+		if ($self->utf8_filenames) {
+			$ent_name= DataStore::CAS::FS::InvalidUTF8->decode_utf8($ent_name);
+		} else {
+			utf8::upgrade($ent_name);
+		}
+
 		my $keep= $filter? $filter->($ent_name, $ent_path, $stat) : 1;
 		next unless $keep;
-		
+
 		# Check for crossing mount point.
 		if (defined $_DEVICE_CONSTRAINT && $stat->dev ne $_DEVICE_CONSTRAINT) {
 			# TODO: log skipped mount points
@@ -410,19 +414,16 @@ recursing and encoding subdirectories as necessary.
 sub import_directory_entry {
 	my ($self, $cas, $path, $ent_name, $stat, $hint)= @_;
 
-	$path= $self->_sanitize_path($path);
-
 	$stat||= $self->_stat($path)
 		or croak "Source does not exist";
-
-	defined $ent_name
-		or (undef, undef, $ent_name)= splitpath($path);
 
 	$self->_build__hint_check_fn;
 
 	local $_DEVICE_CONSTRAINT= $stat->dev
 		unless defined $_DEVICE_CONSTRAINT or $self->cross_mountpoints;
 
+	$ent_name= $self->_entname_from_path($path)
+		unless defined $ent_name;
 	return DataStore::CAS::FS::DirEnt->new(
 		$self->_import_directory_entry($cas, $path, $ent_name, $stat, $hint)
 	);
@@ -502,8 +503,8 @@ sub collect_dirent_metadata {
 	$stat ||= $self->_stat($path)
 		or return undef;
 
-	defined $ent_name
-		or (undef, undef, $ent_name)= splitpath($path);
+	$ent_name= $self->_entname_from_path($path)
+		unless defined $ent_name;
 	
 	my %attrs= (
 		type => ($_ModeToType{$stat->[2] & Fcntl::S_IFMT()}),
@@ -614,20 +615,16 @@ sub _hint_check_ctime {
 	my ($modify_ts, $h_modify_ts)= ($attrs->{metadata_ts}, $hint->metadata_ts);
 	return defined $modify_ts && defined $h_modify_ts && $modify_ts eq $h_modify_ts;
 }
-	
 
-sub _sanitize_path {
+sub _entname_from_path {
 	my ($self, $path)= @_;
-	if (ref $path) {
-		$path= ref $path eq 'ARRAY'? catdir(@$path) : "$path";
+	my (undef, undef, $ent_name)= splitpath($path);
+	if ($self->utf8_filenames) {
+		$ent_name= DataStore::CAS::FS::InvalidUTF8->decode_utf8($ent_name);
+	} else {
+		utf8::upgrade($ent_name);
 	}
-	# If we expect UTF8 in the filesystem, we decode, or wrap invalid encodings.
-	return DataStore::CAS::FS::InvalidUTF8->decode_utf8($path)
-		if $self->utf8_filenames;
-	# Else, we ask Perl to represent the native encoding as Unicode so that
-	# our directory encoders don't get upset.
-	utf8::upgrade($path);
-	$path;
+	$ent_name;
 }
 
 sub _split_dev_node {
@@ -635,12 +632,14 @@ sub _split_dev_node {
 }
 
 sub _stat {
-	my ($self, $path)= @_;
-	# If user requested that we work only with native charset, convert string to native.
-	# Else perl will utf-encode any strings with utf8 flag set.
-	utf8::downgrade($path)
-		unless $self->utf8_filenames;
+	my $fn= \&_stat_unix;
+	no warnings 'redefine';
+	*_stat= $fn;
+	goto $fn;
+}
 
+sub _stat_unix {
+	my ($self, $path)= @_;
 	my @stat= $self->follow_symlink? stat($path) : lstat($path);
 	unless (@stat) {
 		$self->_handle_dir_error("Can't stat '$path': $!");
@@ -650,32 +649,28 @@ sub _stat {
 }
 
 sub _readdir {
-	my ($self, $path)= @_;
-	# If user requested that we work only with native charset, convert string to native.
-	# Else perl will utf-encode any strings with utf8 flag set.
-	utf8::downgrade($path)
-		unless $self->utf8_filenames;
+	my $fn= \&_readdir_unix;
+	no warnings 'redefine';
+	*_readdir= $fn;
+	goto $fn;
+}
 
+sub _readdir_unix {
+	my ($self, $path)= @_;
 	my $dh;
 	if (!opendir($dh, $path)) {
-		$self->_handle_dir_error("Can't open '$path': $!");
+		$self->_handle_dir_error("opendir($path): $!");
 		return undef;
 	}
 
-	my $names= [ grep { $_ ne '.' && $_ ne '..' } readdir($dh) ];
-	if ($self->utf8_filenames) {
-		$_= DataStore::CAS::FS::InvalidUTF8->decode_utf8($_)
-			for @$names;
-	} else {
-		utf8::upgrade($_)
-			for @$names;
-	}
+	my @names= grep { $_ ne '.' && $_ ne '..' } readdir($dh);
 
 	if (!closedir $dh) {
 		$self->_handle_dir_error("closedir($path): $!");
 		return undef;
 	}
-	return $names;
+
+	\@names;
 }
 
 package DataStore::CAS::FS::Importer::FastStat;
