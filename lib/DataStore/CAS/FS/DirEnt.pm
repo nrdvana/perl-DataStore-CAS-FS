@@ -27,47 +27,17 @@ actually exist, use the C<as_hash> method and inspect the keys.
 
 The name of this entry within its directory.
 
-At the end of a long debate with myself, I decided that filenames should be
-defined as unicode strings, because we want the world to move in that
-direction, and because I didn't want to get into the "Native Charset" mess
-when enabling interoperability between Windows and Unix.  However, not all
-UNIX filenames will be unicode, which creates a dilemma: how do you represent
-these without mangling people's backups?
+Will either be a 7-bit ASCII string, a unicode-flagged string, or an instance
+of L<DataStore::CAS::FS::InvalidUTF8> (which stringifies to the original octets).
 
-First, if a file from Unix has a non-UTF-8 name, there is no way to correctly
-extract it on a Windows platform without mangling the name.  (unless you know
-the unix system to be encoded with a specific charset)  The argument of
-"filenames should just be bytes" doesn't work because then you just push the
-problem up the software stack, causing problems for network filesystems,
-removable media, and GUI tools.
-
-Next, (disclaimer: I am not a wide-character user) if you have wide characters
-in your filename in the first place, you probably know what charset they
-should be in.  So, in using a backup utility, you should be able to specify
-the charset so that it can translate the names while reading the filesystem.
-
-And finally, it would be a bigger pain to have to decode filenames as you read
-them from the DataStore::CAS::FS and re-encode them for the current filesystem
-than it would be to always translate Unicode to the current charset.
-
-But still, people might want to make a backup of *mostly* Unicode but still
-preserve a few files that had mangled names.  While you might want to fix
-those filenames, it would be inconvenient if your scheduled backups broke
-because of a bad filename.
-
-So, I came up with the L<DataStore::CAS::FS::InvalidUTF8> object, which you
-can use to wrap invalid UTF-8 sequences and deal with the problem later.
-
-So, this 'name' field should return a string of unicode codepoints *or* an
-instance of DataStore::CAS::FS::InvalidUTF8 (which can stringify to the
-original octets)
+See L<DataStore::CAS::FS/"UNICODE vs. FILENAMES">.
 
 =head2 type
 
 One of "file", "dir", "symlink", "blockdev", "chardev", "pipe", "socket".
 
 Note that 'symlink' refers only to UNIX style symlinks.
-As support for other systems' symbolic links is added, new type strings will
+As support is added for other systems' symbolic links, new type strings will
 be added to this list, and the type will determine how to interpret the
 C<ref> value.
 
