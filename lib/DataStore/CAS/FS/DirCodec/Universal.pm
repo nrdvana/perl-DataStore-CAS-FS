@@ -83,6 +83,13 @@ directory.
 
 =cut
 
+our $_json_coder;
+sub _build_json_coder {
+	DataStore::CAS::FS::InvalidUTF8->add_json_filter(
+		JSON->new->utf8->canonical->convert_blessed, 1
+	);
+}
+
 sub encode {
 	my ($class, $entry_list, $metadata)= @_;
 	ref($metadata) eq 'HASH' or croak "Metadata must be a hashref"
@@ -90,33 +97,28 @@ sub encode {
 
 	my @entries= sort { $a->{name} cmp $b->{name} }
 		map {
-			my %entry= %{ref $_ eq 'HASH'? $_ : $_->as_hash};
-			defined $entry{name} or croak "Can't serialize nameless directory entry: ".JSON::encode_json(\%entry);
-			defined $entry{type} or croak "Can't serialize typeless directory entry: ".JSON::encode_json(\%entry);
-			_is_jsonable($_) or croak "Can't serialize $entry{name}, all attributes must be unicode string, or have TO_JSON: '$_'"
-				for values %entry;
-			\%entry;
+			my $entry= ref $_ eq 'HASH'? $_ : $_->as_hash;
+			defined $entry->{name} or croak "Can't serialize nameless directory entry: ".JSON::encode_json($entry);
+			defined $entry->{type} or croak "Can't serialize typeless directory entry: ".JSON::encode_json($entry);
+			!defined($_) || (ref $_? ref($_)->can("TO_JSON") : &utf8::is_utf8($_) || !($_ =~ /[\x80-\xFF]/))
+				or croak "Can't serialize $entry->{name}, all attributes must be unicode string, or have TO_JSON: '$_'"
+				for values %$entry;
+			$entry;
 		} @$entry_list;
 
-	my $enc= JSON->new->utf8->canonical->convert_blessed;
-	my $json= $enc->encode($metadata || {});
+	$_json_coder ||= _build_json_coder();
+
+	my $json= $_json_coder->encode($metadata || {});
 	my $ret= "CAS_Dir 09 universal\n"
 		."{\"metadata\":$json,\n"
 		." \"entries\":[\n";
 	for (@entries) {
-		$ret .= $enc->encode($_).",\n"
+		$ret .= $_json_coder->encode($_).",\n"
 	}
 
 	# remove trailing comma
 	substr($ret, -2)= "\n" if @entries;
 	return $ret."]}";
-}
-
-sub _is_jsonable {
-	!defined($_[0]) || (ref $_[0]?
-		ref($_[0])->can("TO_JSON")
-		: &utf8::is_utf8 || !($_[0] =~ /[\x80-\xFF]/)
-		);
 }
 
 =head2 decode
@@ -148,9 +150,9 @@ sub decode {
 		$bytes= <$handle>;
 	}
 
-	my $dec= JSON->new()->utf8->canonical->convert_blessed;
-	DataStore::CAS::FS::InvalidUTF8->add_json_filter($dec, 1);
-	my $data= $dec->decode($bytes);
+	$_json_coder ||= _build_json_coder();
+
+	my $data= $_json_coder->decode($bytes);
 	defined $data->{metadata} && ref($data->{metadata}) eq 'HASH'
 		or croak "Directory data is missing 'metadata'";
 	defined $data->{entries} && ref($data->{entries}) eq 'ARRAY'

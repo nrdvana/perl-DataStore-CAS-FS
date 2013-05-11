@@ -47,6 +47,13 @@ See L<DirCodec-E<gt>encode|DataStore::CAS::FS::DirCodec/encode> for details.
 
 =cut
 
+our $_json_coder;
+sub _build_json_coder {
+	DataStore::CAS::FS::InvalidUTF8->add_json_filter(
+		JSON->new->utf8->canonical->convert_blessed, 1
+	);
+}
+
 our %_TypeToCode= (
 	file => ord('f'), dir => ord('d'), symlink => ord('l'),
 	chardev => ord('c'), blockdev => ord('b'),
@@ -54,8 +61,8 @@ our %_TypeToCode= (
 );
 our %_CodeToType= map { $_TypeToCode{$_} => $_ } keys %_TypeToCode;
 our @_FieldOrder= qw(
-	type name ref size modify_ts unix_uid unix_gid unix_mode unix_ctime
-	unix_atime unix_nlink unix_dev unix_inode unix_blocksize unix_blockcount
+	type name ref size modify_ts unix_uid unix_gid unix_mode metadata_ts
+	access_ts unix_nlink unix_dev unix_inode unix_blocksize unix_blockcount
 );
 
 sub encode {
@@ -104,7 +111,7 @@ sub encode {
 	$metadata->{_}{umap}= \%umap;
 	$metadata->{_}{gmap}= \%gmap;
 	
-	my $meta_json= JSON->new->utf8->canonical->convert_blessed->encode($metadata);
+	my $meta_json= ($_json_coder ||= _build_json_coder())->encode($metadata);
 	my $ret= "CAS_Dir 04 unix\n"
 		.pack('N', length($meta_json)).$meta_json
 		.join('', sort { substr($a,4) cmp substr($b,4) } @entries);
@@ -163,9 +170,7 @@ sub decode {
 	$class->_readall($handle, $buf, 4);
 	my ($dirmeta_len)= unpack('N', $buf);
 	$class->_readall($handle, my $json, $dirmeta_len);
-	my $enc= JSON->new()->utf8->canonical->convert_blessed;
-	DataStore::CAS::FS::InvalidUTF8->add_json_filter($enc);
-	my $meta= $enc->decode($json);
+	my $meta= ($_json_coder ||= _build_json_coder())->decode($json);
 
 	# Quick sanity checks
 	ref $meta->{_}{umap} and ref $meta->{_}{gmap}

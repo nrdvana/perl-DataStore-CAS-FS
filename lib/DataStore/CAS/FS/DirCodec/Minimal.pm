@@ -43,6 +43,13 @@ you really want a minimal encoding you shouldn't supply metadata anyway.
 
 =cut
 
+our $_json_coder;
+sub _build_json_coder {
+	DataStore::CAS::FS::InvalidUTF8->add_json_filter(
+		JSON->new->utf8->canonical->convert_blessed, 1
+	);
+}
+
 our %_TypeToCode= ( file => 'f', dir => 'd', symlink => 'l', chardev => 'c', blockdev => 'b', pipe => 'p', socket => 's' );
 our %_CodeToType= map { $_TypeToCode{$_} => $_ } keys %_TypeToCode;
 sub encode {
@@ -71,8 +78,7 @@ sub encode {
 	
 	my $ret= "CAS_Dir 00 \n";
 	if ($metadata and scalar keys %$metadata) {
-		my $enc= JSON->new->utf8->canonical->convert_blessed;
-		$ret .= $enc->encode($metadata);
+		$ret .= ($_json_coder ||= _build_json_coder())->encode($metadata);
 	}
 	$ret .= "\0";
 	$ret .= join('', sort { substr($a,3) cmp substr($b,3) } @entries );
@@ -132,9 +138,7 @@ sub decode {
 	my $meta_end= index($bytes, "\0");
 	$meta_end >= 0 or croak "Missing end of metadata";
 	if ($meta_end > 0) {
-		my $enc= JSON->new()->utf8->canonical->convert_blessed;
-		DataStore::CAS::FS::InvalidUTF8->add_json_filter($enc);
-		$params->{metadata}= $enc->decode(substr($bytes, 0, $meta_end));
+		$params->{metadata}= ($_json_coder ||= _build_json_coder())->decode(substr($bytes, 0, $meta_end));
 	} else {
 		$params->{metadata}= {};
 	}
