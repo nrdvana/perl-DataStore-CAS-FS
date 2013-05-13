@@ -218,7 +218,7 @@ subtest tree_iterator => sub {
 		$iter->skip_dir
 			if @{$x->path_dirents} >= 6 && $x->type eq 'dir';
 	}
-	@expected= grep { (split m|/|) <= 6 } @expected;
+	@expected= grep { (split m|/|, $_) <= 6 } @expected;
 	is_deeply( \@actual, \@expected, 'iteration skipped properly' )
 		or diag "Expected: ".join(' ', @expected)."\nActual: ".join(' ', @actual);
 	
