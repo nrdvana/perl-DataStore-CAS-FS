@@ -193,7 +193,7 @@ subtest tree_iterator => sub {
 	is_deeply( \@actual, \@expected, 'iterate subtree in order' )
 		or diag "Expected: ".join(' ', @expected)."\nActual: ".join(' ', @actual);
 
-	$iter= $cas->path('a','b')->iterator();
+	$iter= $cas->path('a','b')->tree_iterator();
 	@actual= ();
 	while (defined (my $x= $iter->())) {
 		push @actual, $x->resolved_canonical_path;

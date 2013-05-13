@@ -1218,9 +1218,9 @@ sub readdir {
 	$_[0]{filesystem}->readdir($_[0]->path_names)
 }
 
-=head2 iterator
+=head2 tree_iterator
 
-  $iter= $path->iterator( %optional_flags )
+  $iter= $path->tree_iterator( %optional_flags )
 
 Convenience method for
 
@@ -1230,14 +1230,10 @@ See L</tree_iterator>.
 
 =cut
 
-sub iterator {
+sub tree_iterator {
 	my $self= shift;
 	my %p= (@_ == 1 && ref $_[0] eq 'HASH')? %{$_[0]} : @_;
-	return DataStore::CAS::FS::TreeIterator->new(
-		%p,
-		fs => $self->filesystem,
-		path => $self->path_names
-	);
+	$self->filesystem->tree_iterator(%p, path => $self->path_names);
 }
 
 package DataStore::CAS::FS::TreeIterator;
