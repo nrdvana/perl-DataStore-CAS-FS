@@ -5,14 +5,13 @@ use warnings;
 use Try::Tiny;
 use Carp;
 use JSON 2.53 ();
-require DataStore::CAS::FS::Dir;
-require DataStore::CAS::FS::DirEnt;
 require DataStore::CAS::FS::InvalidUTF8;
+require DataStore::CAS::FS::Dir;
 *decode_utf8= *DataStore::CAS::FS::InvalidUTF8::decode_utf8;
 
 use parent 'DataStore::CAS::FS::DirCodec';
 
-our $VERSION= '0.011000';
+our $VERSION= '0.010000';
 
 __PACKAGE__->register_format('minimal' => __PACKAGE__);
 __PACKAGE__->register_format('' => __PACKAGE__);
@@ -43,14 +42,7 @@ you really want a minimal encoding you shouldn't supply metadata anyway.
 
 =cut
 
-our $_json_coder;
-sub _build_json_coder {
-	DataStore::CAS::FS::InvalidUTF8->add_json_filter(
-		JSON->new->utf8->canonical->convert_blessed, 1
-	);
-}
-
-our %_TypeToCode= ( file => 'f', dir => 'd', symlink => 'l', chardev => 'c', blockdev => 'b', pipe => 'p', socket => 's' );
+our %_TypeToCode= ( file => 'f', dir => 'd', symlink => 'l', chardev => 'c', blockdev => 'b', pipe => 'p', socket => 's', whiteout => 'w' );
 our %_CodeToType= map { $_TypeToCode{$_} => $_ } keys %_TypeToCode;
 sub encode {
 	my ($class, $entry_list, $metadata)= @_;
@@ -78,7 +70,8 @@ sub encode {
 	
 	my $ret= "CAS_Dir 00 \n";
 	if ($metadata and scalar keys %$metadata) {
-		$ret .= ($_json_coder ||= _build_json_coder())->encode($metadata);
+		my $enc= JSON->new->utf8->canonical->convert_blessed;
+		$ret .= $enc->encode($metadata);
 	}
 	$ret .= "\0";
 	$ret .= join('', sort { substr($a,3) cmp substr($b,3) } @entries );
@@ -138,7 +131,9 @@ sub decode {
 	my $meta_end= index($bytes, "\0");
 	$meta_end >= 0 or croak "Missing end of metadata";
 	if ($meta_end > 0) {
-		$params->{metadata}= ($_json_coder ||= _build_json_coder())->decode(substr($bytes, 0, $meta_end));
+		my $enc= JSON->new()->utf8->canonical->convert_blessed;
+		DataStore::CAS::FS::InvalidUTF8->add_json_filter($enc);
+		$params->{metadata}= $enc->decode(substr($bytes, 0, $meta_end));
 	} else {
 		$params->{metadata}= {};
 	}

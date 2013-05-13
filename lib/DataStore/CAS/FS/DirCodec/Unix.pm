@@ -57,7 +57,7 @@ sub _build_json_coder {
 our %_TypeToCode= (
 	file => ord('f'), dir => ord('d'), symlink => ord('l'),
 	chardev => ord('c'), blockdev => ord('b'),
-	pipe => ord('p'), socket => ord('s')
+	pipe => ord('p'), socket => ord('s'), whiteout => ord('w'),
 );
 our %_CodeToType= map { $_TypeToCode{$_} => $_ } keys %_TypeToCode;
 our @_FieldOrder= qw(
