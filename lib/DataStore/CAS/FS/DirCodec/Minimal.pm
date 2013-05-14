@@ -11,7 +11,7 @@ require DataStore::CAS::FS::Dir;
 
 use parent 'DataStore::CAS::FS::DirCodec';
 
-our $VERSION= '0.010000';
+our $VERSION= '0.011000';
 
 __PACKAGE__->register_format('minimal' => __PACKAGE__);
 __PACKAGE__->register_format('' => __PACKAGE__);
